@@ -5,10 +5,49 @@ import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from '@/components/ui/sheet';
+import { Filter, RotateCcw, Search } from 'lucide-react';
+
+type LeaveFilters = {
+  type: string;
+  status: string;
+  duration: string;
+  leaveDateFrom: string;
+  leaveDateTo: string;
+  appliedDateFrom: string;
+  appliedDateTo: string;
+};
+
+const emptyFilters: LeaveFilters = {
+  type: '',
+  status: '',
+  duration: '',
+  leaveDateFrom: '',
+  leaveDateTo: '',
+  appliedDateFrom: '',
+  appliedDateTo: '',
+};
+
+const dateKey = (value?: string) => value?.slice(0, 10) || '';
 
 export default function LeaveHistory() {
   const { user } = useAuth();
   const [leaves, setLeaves] = useState<any[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [draftFilters, setDraftFilters] = useState<LeaveFilters>(emptyFilters);
+  const [appliedFilters, setAppliedFilters] = useState<LeaveFilters>(emptyFilters);
 
   useEffect(() => {
     let mounted = true;
@@ -39,11 +78,209 @@ export default function LeaveHistory() {
     }
   };
 
+  const activeFilterCount = Object.values(appliedFilters).filter(Boolean).length;
+  const leaveTypes = Array.from(new Set(leaves.map((leave) => leave.type).filter(Boolean))).sort();
+  const statuses = ['Pending', 'Approved', 'Rejected', 'Cancelled'];
+  const durations = Array.from(new Set(leaves.map((leave) => leave.duration).filter(Boolean))).sort();
+
+  const filteredLeaves = leaves.filter((leave) => {
+    const leaveStart = dateKey(leave.startDate);
+    const leaveEnd = dateKey(leave.endDate);
+    const appliedDate = dateKey(leave.appliedDate);
+    const query = searchTerm.trim().toLowerCase();
+    const matchesSearch = !query || [
+      leave.type,
+      leave.status,
+      leave.duration,
+      leave.description,
+      leave.actionBy,
+      leave.reasonForAction,
+    ].some((value) => String(value || '').toLowerCase().includes(query));
+
+    return (
+      matchesSearch &&
+      (!appliedFilters.type || leave.type === appliedFilters.type) &&
+      (!appliedFilters.status || leave.status === appliedFilters.status) &&
+      (!appliedFilters.duration || leave.duration === appliedFilters.duration) &&
+      (!appliedFilters.leaveDateFrom || (leaveEnd && leaveEnd >= appliedFilters.leaveDateFrom)) &&
+      (!appliedFilters.leaveDateTo || (leaveStart && leaveStart <= appliedFilters.leaveDateTo)) &&
+      (!appliedFilters.appliedDateFrom || appliedDate >= appliedFilters.appliedDateFrom) &&
+      (!appliedFilters.appliedDateTo || appliedDate <= appliedFilters.appliedDateTo)
+    );
+  });
+
+  const resetFilters = () => {
+    setDraftFilters(emptyFilters);
+    setAppliedFilters(emptyFilters);
+  };
+
+  const updateFilter = (key: keyof LeaveFilters, value: string) => {
+    setDraftFilters((current) => ({ ...current, [key]: value }));
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="mb-6">
         <h2 className="text-3xl font-display font-bold text-slate-900 mb-2">Leave History</h2>
         <p className="text-slate-600">Track all your past and current leave applications</p>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="relative w-full max-w-xs">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Input
+            aria-label="Search leave history"
+            placeholder="Search leave history..."
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            className="h-9 border-slate-200 bg-white pl-9"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          {activeFilterCount > 0 && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={resetFilters}
+              className="text-slate-600 hover:text-slate-900"
+            >
+              <RotateCcw className="h-4 w-4" />
+              Clear filters
+            </Button>
+          )}
+          <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
+            <SheetTrigger asChild>
+              <Button variant="outline" className="border-slate-200 bg-white text-slate-700">
+                <Filter className="h-4 w-4" />
+                Filters
+                {activeFilterCount > 0 && (
+                  <Badge variant="secondary" className="ml-1 h-5 min-w-5 justify-center rounded-full px-1.5">
+                    {activeFilterCount}
+                  </Badge>
+                )}
+              </Button>
+            </SheetTrigger>
+          <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-md">
+            <SheetHeader className="border-b border-slate-200 px-6 py-5 text-left">
+              <SheetTitle className="flex items-center gap-2 text-slate-900">
+                <Filter className="h-5 w-5 text-primary" />
+                Filter leave history
+              </SheetTitle>
+              <SheetDescription>Choose one or more options to narrow your leave records.</SheetDescription>
+            </SheetHeader>
+
+            <div className="flex-1 space-y-6 overflow-y-auto px-6 py-6">
+              <div className="space-y-2">
+                <Label htmlFor="history-type">Leave type</Label>
+                <select
+                  id="history-type"
+                  value={draftFilters.type}
+                  onChange={(event) => updateFilter('type', event.target.value)}
+                  className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <option value="">All leave types</option>
+                  {leaveTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="history-status">Status</Label>
+                <select
+                  id="history-status"
+                  value={draftFilters.status}
+                  onChange={(event) => updateFilter('status', event.target.value)}
+                  className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <option value="">All statuses</option>
+                  {statuses.map((status) => <option key={status} value={status}>{status}</option>)}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="history-duration">Duration</Label>
+                <select
+                  id="history-duration"
+                  value={draftFilters.duration}
+                  onChange={(event) => updateFilter('duration', event.target.value)}
+                  className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  <option value="">All durations</option>
+                  {durations.map((duration) => <option key={duration} value={duration}>{duration}</option>)}
+                </select>
+              </div>
+
+              <fieldset className="space-y-3">
+                <legend className="text-sm font-medium leading-none text-slate-900">Leave dates</legend>
+                <p className="text-xs text-slate-500">Include leaves that overlap this date range.</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="history-leave-from" className="text-xs text-slate-600">From</Label>
+                    <Input
+                      id="history-leave-from"
+                      type="date"
+                      value={draftFilters.leaveDateFrom}
+                      max={draftFilters.leaveDateTo || undefined}
+                      onChange={(event) => updateFilter('leaveDateFrom', event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="history-leave-to" className="text-xs text-slate-600">To</Label>
+                    <Input
+                      id="history-leave-to"
+                      type="date"
+                      value={draftFilters.leaveDateTo}
+                      min={draftFilters.leaveDateFrom || undefined}
+                      onChange={(event) => updateFilter('leaveDateTo', event.target.value)}
+                    />
+                  </div>
+                </div>
+              </fieldset>
+
+              <fieldset className="space-y-3">
+                <legend className="text-sm font-medium leading-none text-slate-900">Applied date</legend>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="history-applied-from" className="text-xs text-slate-600">From</Label>
+                    <Input
+                      id="history-applied-from"
+                      type="date"
+                      value={draftFilters.appliedDateFrom}
+                      max={draftFilters.appliedDateTo || undefined}
+                      onChange={(event) => updateFilter('appliedDateFrom', event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="history-applied-to" className="text-xs text-slate-600">To</Label>
+                    <Input
+                      id="history-applied-to"
+                      type="date"
+                      value={draftFilters.appliedDateTo}
+                      min={draftFilters.appliedDateFrom || undefined}
+                      onChange={(event) => updateFilter('appliedDateTo', event.target.value)}
+                    />
+                  </div>
+                </div>
+              </fieldset>
+            </div>
+
+            <SheetFooter className="border-t border-slate-200 px-6 py-4 sm:flex-row sm:justify-between sm:space-x-0">
+              <Button type="button" variant="ghost" onClick={resetFilters} className="text-slate-600">
+                <RotateCcw className="h-4 w-4" />
+                Reset
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  setAppliedFilters(draftFilters);
+                  setFiltersOpen(false);
+                }}
+              >
+                Apply filters
+              </Button>
+            </SheetFooter>
+          </SheetContent>
+          </Sheet>
+        </div>
       </div>
 
       <Card className="bg-white border-slate-200 shadow-sm">
@@ -63,14 +300,14 @@ export default function LeaveHistory() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {leaves.length === 0 ? (
+              {filteredLeaves.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={9} className="text-center py-8 text-slate-500 italic">
                     No records found
                   </TableCell>
                 </TableRow>
               ) : (
-                leaves.map((leave) => (
+                filteredLeaves.map((leave) => (
                   <TableRow key={leave.id} className="hover:bg-slate-50 border-slate-100 transition-colors">
                     <TableCell className="font-semibold text-slate-900">{leave.type}</TableCell>
                     <TableCell className="text-slate-600 font-medium">

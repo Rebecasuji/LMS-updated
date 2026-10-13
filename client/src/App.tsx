@@ -9,6 +9,7 @@ import ApproveCompOff from '@/pages/admin/ApproveCompOff';
 import LeaveHistory from '@/pages/employee/History';
 import Profile from '@/pages/employee/Profile';
 import Permission from '@/pages/employee/Permission';
+import PermissionHistory from '@/pages/employee/PermissionHistory';
 import AdminDashboard from '@/pages/admin/Dashboard';
 import ViewLeaves from '@/pages/admin/ViewLeaves';
 import ViewPermissions from '@/pages/admin/ViewPermissions';
@@ -92,6 +93,9 @@ function AppRoutes() {
       </Route>
       <Route path="/employee/permission">
         <ProtectedRoute component={Permission} role="Employee" />
+      </Route>
+      <Route path="/employee/permission-history">
+        <ProtectedRoute component={PermissionHistory} role="Employee" />
       </Route>
       <Route path="/employee/apply-comp-off">
         <ProtectedRoute component={ApplyCompOff} role="Employee" />

@@ -7,10 +7,12 @@ import { ArrowLeft, User, Calendar, Clock, TrendingUp } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { format, parseISO, getMonth, startOfYear, eachMonthOfInterval, endOfYear } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
+import { useAuth } from '@/context/AuthContext';
 
 export default function IndividualReport() {
   const { id } = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
+  const { user } = useAuth();
   const [employee, setEmployee] = useState<any>(null);
   const [leaves, setLeaves] = useState<any[]>([]);
   const [permissions, setPermissions] = useState<any[]>([]);
@@ -68,7 +70,13 @@ export default function IndividualReport() {
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => setLocation('/reports')} className="text-slate-600">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setLocation(user?.role === 'Employee' ? '/employee/dashboard' : '/reports')}
+          aria-label={user?.role === 'Employee' ? 'Back to dashboard' : 'Back to reports'}
+          className="text-slate-600"
+        >
           <ArrowLeft className="w-5 h-5" />
         </Button>
         <div>

@@ -3,7 +3,6 @@ import { ThemeToggle } from './ThemeToggle';
 import { NotificationsBell } from '@/components/NotificationsBell';
 import { Toaster } from '@/components/ui/toaster';
 import { useEffect, useRef, useState } from 'react';
-import { Menu, X } from 'lucide-react';
 import gsap from 'gsap';
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -28,9 +27,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className="absolute bottom-0 right-1/4 w-[600px] h-[600px] bg-blue-100/10 dark:bg-blue-900/10 rounded-full blur-[120px]" />
       </div>
 
-      {/* Sidebar with responsive overlay */}
-      <div className={`fixed inset-y-0 left-0 z-40 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <Sidebar />
+      {/* Sidebar collapses to an icon rail instead of disappearing */}
+      <div className="fixed inset-y-0 left-0 z-40">
+        <Sidebar collapsed={!sidebarOpen} onToggle={() => setSidebarOpen((open) => !open)} />
       </div>
 
       {/* Mobile overlay */}
@@ -41,12 +40,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
         />
       )}
 
-      <main className={`flex-1 ${sidebarOpen ? 'md:ml-64' : ''} relative z-10 h-screen overflow-y-auto transition-all duration-300`}>
+      <main className={`flex-1 ml-16 ${sidebarOpen ? 'md:ml-64' : 'md:ml-16'} relative z-10 h-screen overflow-y-auto transition-all duration-300`}>
         {/* Top Header */}
         <header className="h-16 flex items-center justify-between px-8 bg-white/50 dark:bg-slate-900/50 backdrop-blur border-b border-border sticky top-0 z-20">
-          <div className="flex items-center gap-4">
-            {/* The toggle button has been removed as per user feedback ("wrong button") */}
-          </div>
+          <div className="flex items-center gap-4" />
           <div className="flex items-center gap-4">
             <NotificationsBell />
             <ThemeToggle />

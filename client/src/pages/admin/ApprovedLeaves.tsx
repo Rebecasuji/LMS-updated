@@ -6,12 +6,43 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
 import { Input } from '@/components/ui/input';
-import { Search, Download, Calendar, Clock, FileText, User as UserIcon, Eye, CheckCircle2 } from 'lucide-react';
+import { Search, Download, Calendar, Clock, FileText, User as UserIcon, Eye, CheckCircle2, Filter, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from '@/components/ui/sheet';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import * as XLSX from 'xlsx';
 import { useToast } from '@/hooks/use-toast';
+
+type ApprovedLeaveFilters = {
+  type: string;
+  duration: string;
+  leaveDateFrom: string;
+  leaveDateTo: string;
+  appliedDateFrom: string;
+  appliedDateTo: string;
+};
+
+const emptyApprovedLeaveFilters: ApprovedLeaveFilters = {
+  type: '',
+  duration: '',
+  leaveDateFrom: '',
+  leaveDateTo: '',
+  appliedDateFrom: '',
+  appliedDateTo: '',
+};
+
+const dateKey = (value?: string) => value?.slice(0, 10) || '';
 
 function calculateOtHours(fromTime?: string, toTime?: string): number {
   if (!fromTime || !toTime) return 0;
@@ -33,6 +64,9 @@ export default function ApprovedLeaves() {
   const [searchTerm, setSearchTerm] = useState('');
   const [otSearchTerm, setOtSearchTerm] = useState('');
   const [selectedDate, setSelectedDate] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [draftFilters, setDraftFilters] = useState<ApprovedLeaveFilters>(emptyApprovedLeaveFilters);
+  const [appliedFilters, setAppliedFilters] = useState<ApprovedLeaveFilters>(emptyApprovedLeaveFilters);
   const [loading, setLoading] = useState(true);
   const [selectedOtUser, setSelectedOtUser] = useState<{ user: User; otLeaves: any[]; totalHours: number } | null>(null);
   const { toast } = useToast();
@@ -123,12 +157,33 @@ export default function ApprovedLeaves() {
 
   const filteredLeaves = leaves.filter(l => {
     const matchesSearch = searchTerm === '' ||
-      l.employeeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      l.employeeCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      l.type.toLowerCase().includes(searchTerm.toLowerCase());
+      String(l.employeeName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      String(l.employeeCode || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      String(l.type || '').toLowerCase().includes(searchTerm.toLowerCase());
     const matchesDate = !selectedDate || (l.startDate <= selectedDate && l.endDate >= selectedDate);
-    return matchesSearch && matchesDate;
+    const leaveStart = dateKey(l.startDate);
+    const leaveEnd = dateKey(l.endDate);
+    const appliedDate = dateKey(l.appliedDate);
+    return matchesSearch &&
+      matchesDate &&
+      (!appliedFilters.type || l.type === appliedFilters.type) &&
+      (!appliedFilters.duration || l.duration === appliedFilters.duration) &&
+      (!appliedFilters.leaveDateFrom || (leaveEnd && leaveEnd >= appliedFilters.leaveDateFrom)) &&
+      (!appliedFilters.leaveDateTo || (leaveStart && leaveStart <= appliedFilters.leaveDateTo)) &&
+      (!appliedFilters.appliedDateFrom || appliedDate >= appliedFilters.appliedDateFrom) &&
+      (!appliedFilters.appliedDateTo || appliedDate <= appliedFilters.appliedDateTo);
   });
+
+  const activeFilterCount = Object.values(appliedFilters).filter(Boolean).length;
+  const leaveTypes = Array.from(new Set(leaves.map((leave) => leave.type).filter(Boolean))).sort();
+  const durations = Array.from(new Set(leaves.map((leave) => leave.duration).filter(Boolean))).sort();
+  const resetFilters = () => {
+    setDraftFilters(emptyApprovedLeaveFilters);
+    setAppliedFilters(emptyApprovedLeaveFilters);
+  };
+  const updateFilter = (key: keyof ApprovedLeaveFilters, value: string) => {
+    setDraftFilters((current) => ({ ...current, [key]: value }));
+  };
 
   // Filter only approved OT leaves
   const approvedOtLeaves = leaves.filter(l => l.type === 'OT');
@@ -205,8 +260,9 @@ export default function ApprovedLeaves() {
 
         {/* TAB 1: ALL APPROVED LEAVES */}
         <TabsContent value="all-leaves" className="space-y-4">
-          <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
-            <div className="flex flex-col md:flex-row gap-4 flex-1 w-full">
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
+              <div className="flex flex-col md:flex-row gap-4 flex-1 w-full">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                 <Input
@@ -225,13 +281,123 @@ export default function ApprovedLeaves() {
                   className="pl-10 bg-white border-slate-200"
                 />
               </div>
+              </div>
+              <div className="flex w-full items-center justify-end gap-2 md:w-auto">
+                {activeFilterCount > 0 && (
+                  <Button type="button" variant="ghost" onClick={resetFilters} className="text-slate-600 hover:text-slate-900">
+                    <RotateCcw className="h-4 w-4" />
+                    Clear filters
+                  </Button>
+                )}
+                <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
+                  <SheetTrigger asChild>
+                    <Button type="button" variant="outline" className="border-slate-200 bg-white text-slate-700">
+                      <Filter className="h-4 w-4" />
+                      Filters
+                      {activeFilterCount > 0 && (
+                        <Badge variant="secondary" className="ml-1 h-5 min-w-5 justify-center rounded-full px-1.5">
+                          {activeFilterCount}
+                        </Badge>
+                      )}
+                    </Button>
+                  </SheetTrigger>
+                  <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-md">
+                    <SheetHeader className="border-b border-slate-200 px-6 py-5 text-left">
+                      <SheetTitle className="flex items-center gap-2 text-slate-900">
+                        <Filter className="h-5 w-5 text-primary" />
+                        Filter approved leaves
+                      </SheetTitle>
+                      <SheetDescription>Narrow approved leave records by type, duration, or date.</SheetDescription>
+                    </SheetHeader>
+                    <div className="flex-1 space-y-6 overflow-y-auto px-6 py-6">
+                      <div className="space-y-2">
+                        <Label>Leave type</Label>
+                        <Select
+                          value={draftFilters.type || 'all'}
+                          onValueChange={(value) => updateFilter('type', value === 'all' ? '' : value)}
+                        >
+                          <SelectTrigger id="approved-history-type" className="bg-white">
+                            <SelectValue placeholder="All leave types" />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-64 overflow-y-auto">
+                            <SelectItem value="all">All leave types</SelectItem>
+                            {leaveTypes.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Duration</Label>
+                        <Select
+                          value={draftFilters.duration || 'all'}
+                          onValueChange={(value) => updateFilter('duration', value === 'all' ? '' : value)}
+                        >
+                          <SelectTrigger id="approved-history-duration" className="bg-white">
+                            <SelectValue placeholder="All durations" />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-64 overflow-y-auto">
+                            <SelectItem value="all">All durations</SelectItem>
+                            {durations.map((duration) => <SelectItem key={duration} value={duration}>{duration}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <fieldset className="space-y-3">
+                        <legend className="text-sm font-medium leading-none text-slate-900">Leave dates</legend>
+                        <p className="text-xs text-slate-500">Include leaves that overlap this date range.</p>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-2">
+                            <Label htmlFor="approved-leave-from" className="text-xs text-slate-600">From</Label>
+                            <Input id="approved-leave-from" type="date" value={draftFilters.leaveDateFrom}
+                              max={draftFilters.leaveDateTo || undefined}
+                              onChange={(event) => updateFilter('leaveDateFrom', event.target.value)} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="approved-leave-to" className="text-xs text-slate-600">To</Label>
+                            <Input id="approved-leave-to" type="date" value={draftFilters.leaveDateTo}
+                              min={draftFilters.leaveDateFrom || undefined}
+                              onChange={(event) => updateFilter('leaveDateTo', event.target.value)} />
+                          </div>
+                        </div>
+                      </fieldset>
+                      <fieldset className="space-y-3">
+                        <legend className="text-sm font-medium leading-none text-slate-900">Applied date</legend>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-2">
+                            <Label htmlFor="approved-applied-from" className="text-xs text-slate-600">From</Label>
+                            <Input id="approved-applied-from" type="date" value={draftFilters.appliedDateFrom}
+                              max={draftFilters.appliedDateTo || undefined}
+                              onChange={(event) => updateFilter('appliedDateFrom', event.target.value)} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="approved-applied-to" className="text-xs text-slate-600">To</Label>
+                            <Input id="approved-applied-to" type="date" value={draftFilters.appliedDateTo}
+                              min={draftFilters.appliedDateFrom || undefined}
+                              onChange={(event) => updateFilter('appliedDateTo', event.target.value)} />
+                          </div>
+                        </div>
+                      </fieldset>
+                    </div>
+                    <SheetFooter className="border-t border-slate-200 px-6 py-4 sm:flex-row sm:justify-between sm:space-x-0">
+                      <Button type="button" variant="ghost" onClick={resetFilters} className="text-slate-600">
+                        <RotateCcw className="h-4 w-4" />
+                        Reset
+                      </Button>
+                      <Button type="button" onClick={() => {
+                        setAppliedFilters(draftFilters);
+                        setFiltersOpen(false);
+                      }}>
+                        Apply filters
+                      </Button>
+                    </SheetFooter>
+                  </SheetContent>
+                </Sheet>
+                <Button
+                  onClick={exportToExcel}
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold shadow-md shrink-0"
+                >
+                  <Download className="w-4 h-4 mr-2" /> Export Excel
+                </Button>
+              </div>
             </div>
-            <Button
-              onClick={exportToExcel}
-              className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold shadow-md shrink-0"
-            >
-              <Download className="w-4 h-4 mr-2" /> Export Excel
-            </Button>
           </div>
 
           <Card className="bg-white border-slate-200 shadow-sm overflow-hidden">

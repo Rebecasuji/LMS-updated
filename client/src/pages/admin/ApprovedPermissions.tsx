@@ -5,15 +5,43 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
 import { Input } from '@/components/ui/input';
-import { Search, Download, Calendar, Clock } from 'lucide-react';
+import { Search, Download, Calendar, Clock, Filter, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import {
+    Sheet,
+    SheetContent,
+    SheetDescription,
+    SheetFooter,
+    SheetHeader,
+    SheetTitle,
+    SheetTrigger,
+} from '@/components/ui/sheet';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import * as XLSX from 'xlsx';
 import { useToast } from '@/hooks/use-toast';
+
+type ApprovedPermissionFilters = {
+    type: string;
+    dateFrom: string;
+    dateTo: string;
+};
+
+const emptyFilters: ApprovedPermissionFilters = {
+    type: '',
+    dateFrom: '',
+    dateTo: '',
+};
+
+const dateKey = (value?: string) => value?.slice(0, 10) || '';
 
 export default function ApprovedPermissions() {
     const [permissions, setPermissions] = useState<PermissionRequest[]>([]);
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedDate, setSelectedDate] = useState('');
+    const [filtersOpen, setFiltersOpen] = useState(false);
+    const [draftFilters, setDraftFilters] = useState<ApprovedPermissionFilters>(emptyFilters);
+    const [appliedFilters, setAppliedFilters] = useState<ApprovedPermissionFilters>(emptyFilters);
     const [loading, setLoading] = useState(true);
     const { toast } = useToast();
 
@@ -60,12 +88,27 @@ export default function ApprovedPermissions() {
 
     const filteredPermissions = permissions.filter(p => {
         const matchesSearch = searchTerm === '' ||
-            p.employeeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            p.employeeCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            p.type.toLowerCase().includes(searchTerm.toLowerCase());
+            String(p.employeeName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+            String(p.employeeCode || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+            String(p.type || '').toLowerCase().includes(searchTerm.toLowerCase());
         const matchesDate = !selectedDate || p.date === selectedDate;
-        return matchesSearch && matchesDate;
+        const permissionDate = dateKey(p.date);
+        return matchesSearch &&
+            matchesDate &&
+            (!appliedFilters.type || p.type === appliedFilters.type) &&
+            (!appliedFilters.dateFrom || (permissionDate && permissionDate >= appliedFilters.dateFrom)) &&
+            (!appliedFilters.dateTo || (permissionDate && permissionDate <= appliedFilters.dateTo));
     });
+
+    const activeFilterCount = Object.values(appliedFilters).filter(Boolean).length;
+    const permissionTypes = Array.from(new Set(permissions.map((permission) => permission.type).filter(Boolean))).sort();
+    const resetFilters = () => {
+        setDraftFilters(emptyFilters);
+        setAppliedFilters(emptyFilters);
+    };
+    const updateFilter = (key: keyof ApprovedPermissionFilters, value: string) => {
+        setDraftFilters((current) => ({ ...current, [key]: value }));
+    };
 
     const getPermissionTypeColor = (type: string) => {
         switch (type) {
@@ -92,7 +135,7 @@ export default function ApprovedPermissions() {
                 </Button>
             </div>
 
-            <div className="flex flex-col md:flex-row gap-4">
+            <div className="flex flex-col md:flex-row md:items-center gap-4">
                 <div className="relative flex-1">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <Input
@@ -110,6 +153,92 @@ export default function ApprovedPermissions() {
                         onChange={(e) => setSelectedDate(e.target.value)}
                         className="pl-10 bg-white border-slate-200"
                     />
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                    {activeFilterCount > 0 && (
+                        <Button type="button" variant="ghost" onClick={resetFilters} className="text-slate-600 hover:text-slate-900">
+                            <RotateCcw className="h-4 w-4" />
+                            Clear filters
+                        </Button>
+                    )}
+                    <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
+                        <SheetTrigger asChild>
+                            <Button type="button" variant="outline" className="border-slate-200 bg-white text-slate-700">
+                                <Filter className="h-4 w-4" />
+                                Filters
+                                {activeFilterCount > 0 && (
+                                    <Badge variant="secondary" className="ml-1 h-5 min-w-5 justify-center rounded-full px-1.5">
+                                        {activeFilterCount}
+                                    </Badge>
+                                )}
+                            </Button>
+                        </SheetTrigger>
+                        <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-md">
+                            <SheetHeader className="border-b border-slate-200 px-6 py-5 text-left">
+                                <SheetTitle className="flex items-center gap-2 text-slate-900">
+                                    <Filter className="h-5 w-5 text-primary" />
+                                    Filter approved permissions
+                                </SheetTitle>
+                                <SheetDescription>Narrow approved permissions by type or permission date.</SheetDescription>
+                            </SheetHeader>
+                            <div className="flex-1 space-y-6 overflow-y-auto px-6 py-6">
+                                <div className="space-y-2">
+                                    <Label>Permission type</Label>
+                                    <Select
+                                        value={draftFilters.type || 'all'}
+                                        onValueChange={(value) => updateFilter('type', value === 'all' ? '' : value)}
+                                    >
+                                        <SelectTrigger id="approved-permission-type" className="bg-white">
+                                            <SelectValue placeholder="All permission types" />
+                                        </SelectTrigger>
+                                        <SelectContent className="max-h-64 overflow-y-auto">
+                                            <SelectItem value="all">All permission types</SelectItem>
+                                            {permissionTypes.map((type) => (
+                                                <SelectItem key={type} value={type}>{type}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <fieldset className="space-y-3">
+                                    <legend className="text-sm font-medium leading-none text-slate-900">Permission date</legend>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div className="space-y-2">
+                                            <Label htmlFor="approved-permission-from" className="text-xs text-slate-600">From</Label>
+                                            <Input
+                                                id="approved-permission-from"
+                                                type="date"
+                                                value={draftFilters.dateFrom}
+                                                max={draftFilters.dateTo || undefined}
+                                                onChange={(event) => updateFilter('dateFrom', event.target.value)}
+                                            />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label htmlFor="approved-permission-to" className="text-xs text-slate-600">To</Label>
+                                            <Input
+                                                id="approved-permission-to"
+                                                type="date"
+                                                value={draftFilters.dateTo}
+                                                min={draftFilters.dateFrom || undefined}
+                                                onChange={(event) => updateFilter('dateTo', event.target.value)}
+                                            />
+                                        </div>
+                                    </div>
+                                </fieldset>
+                            </div>
+                            <SheetFooter className="border-t border-slate-200 px-6 py-4 sm:flex-row sm:justify-between sm:space-x-0">
+                                <Button type="button" variant="ghost" onClick={resetFilters} className="text-slate-600">
+                                    <RotateCcw className="h-4 w-4" />
+                                    Reset
+                                </Button>
+                                <Button type="button" onClick={() => {
+                                    setAppliedFilters(draftFilters);
+                                    setFiltersOpen(false);
+                                }}>
+                                    Apply filters
+                                </Button>
+                            </SheetFooter>
+                        </SheetContent>
+                    </Sheet>
                 </div>
             </div>
 
