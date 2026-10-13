@@ -43,6 +43,14 @@ const leaveSchema = z.object({
 }, {
   message: "From Time and To Time are required for Hourly basis (OD / OT)",
   path: ["duration"],
+}).refine((data) => {
+  if (data.duration === 'Hourly' && (data.type === 'OD' || data.type === 'OT') && data.fromTime && data.toTime) {
+    return data.fromTime < data.toTime;
+  }
+  return true;
+}, {
+  message: "To Time must be after From Time",
+  path: ["toTime"],
 });
 
 const permissionSchema = z.object({

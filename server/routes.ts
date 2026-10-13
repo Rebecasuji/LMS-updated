@@ -100,10 +100,36 @@ export async function registerRoutes(
         return res.status(400).json({ success: false, message: "Missing required fields" });
       }
 
+      const isHourlyOdOrOt = leave.duration === 'Hourly' && (leave.type === 'OD' || leave.type === 'OT');
+      const requestedFromTime = leave.fromTime || leave.odFromTime;
+      const requestedToTime = leave.toTime || leave.odToTime;
+      const parseTimeMinutes = (time: unknown) => {
+        if (typeof time !== 'string') return null;
+        const match = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d)(?:\.\d+)?)?$/.exec(time);
+        return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+      };
+      const requestedStartMinutes = parseTimeMinutes(requestedFromTime);
+      const requestedEndMinutes = parseTimeMinutes(requestedToTime);
+
+      if (isHourlyOdOrOt && (
+        requestedStartMinutes === null ||
+        requestedEndMinutes === null ||
+        requestedStartMinutes >= requestedEndMinutes
+      )) {
+        return res.status(400).json({
+          success: false,
+          message: "Hourly OD / OT must have valid times, with the end time after the start time."
+        });
+      }
+
+      const db = supabaseServer;
+      if (!db) {
+        return res.status(500).json({ success: false, message: "Database server connection unavailable" });
+      }
+
       // 1. Fetch existing leaves for this employee that are Pending or Approved
-      const { data: existingLeaves, error: fetchError } = await supabaseServer
-        .from('leaves')
-        .select('start_date, end_date, leave_type')
+      const { data: existingLeaves, error: fetchError } = await (db.from('leaves') as any)
+        .select('start_date, end_date, leave_type, leave_duration_type, from_time, to_time, od_from_time, od_to_time')
         .eq('user_id', employeeId)
         .in('status', ['Pending', 'Approved']);
 
@@ -130,6 +156,30 @@ export async function registerRoutes(
         const existingEnd = parseDateStr(existing.end_date);
 
         if (!isNaN(existingStart) && !isNaN(existingEnd) && reqStart <= existingEnd && reqEnd >= existingStart) {
+          const existingStartMinutes = parseTimeMinutes(existing.from_time || existing.od_from_time);
+          const existingEndMinutes = parseTimeMinutes(existing.to_time || existing.od_to_time);
+          const isHourlyOdOtPair =
+            isHourlyOdOrOt &&
+            existing.leave_duration_type === 'Hourly' &&
+            ((leave.type === 'OD' && existing.leave_type === 'OT') ||
+              (leave.type === 'OT' && existing.leave_type === 'OD'));
+          const sameSingleDate =
+            reqStart === reqEnd &&
+            existingStart === existingEnd &&
+            reqStart === existingStart;
+
+          if (
+            isHourlyOdOtPair &&
+            sameSingleDate &&
+            existingStartMinutes !== null &&
+            existingEndMinutes !== null &&
+            requestedStartMinutes !== null &&
+            requestedEndMinutes !== null &&
+            (requestedEndMinutes <= existingStartMinutes || existingEndMinutes <= requestedStartMinutes)
+          ) {
+            continue;
+          }
+
           const overlapStart = new Date(Math.max(reqStart, existingStart));
           const overlapEnd = new Date(Math.min(reqEnd, existingEnd));
           
@@ -190,11 +240,7 @@ export async function registerRoutes(
       };
 
       // 4. Insert
-      if (!supabaseServer) {
-        return res.status(500).json({ success: false, message: "Database server connection unavailable" });
-      }
-
-      const resp = await (supabaseServer.from('leaves') as any).insert(safePayload).select();
+      const resp = await (db.from('leaves') as any).insert(safePayload).select();
 
       if (resp.error) {
         console.error('Error inserting leave:', resp.error);
