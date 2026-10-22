@@ -141,11 +141,12 @@ export default function EmployeeDashboard() {
           label: 'Leave Quota',
           value: `${balance?.total?.remaining ?? 15} Days`,
           type: 'quota',
-          subtext: `Casual: ${balance?.casual?.remaining ?? 2}/2 | Sick: ${balance?.sick?.remaining ?? 3}/3 | Priv: ${balance?.privilege?.remaining ?? 10}/10`
+          subtext: `Casual: ${balance?.casual?.remaining ?? 2}/2 | Sick: ${balance?.sick?.remaining ?? 3}/3 | Priv: ${balance?.privilege?.remaining ?? 10}/10`,
+          path: '/employee/apply-leave'
         },
-        { label: 'Pending', value: pending, type: 'pending' },
-        { label: 'Approved', value: approved, type: 'approved' },
-        { label: 'Rejected', value: rejected, type: 'rejected' },
+        { label: 'Pending', value: pending, type: 'pending', path: '/employee/history' },
+        { label: 'Approved', value: approved, type: 'approved', path: '/employee/history' },
+        { label: 'Rejected', value: rejected, type: 'rejected', path: '/employee/history' },
       ]} />
 
       <div className="space-y-4">

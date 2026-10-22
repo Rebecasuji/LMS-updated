@@ -13,6 +13,8 @@ export interface User {
   reportingManager?: string;
   hrName?: string;
   isActive?: boolean;
+  department?: string;
+  departmentId?: string;
 }
 
 export interface LeaveRequest {
@@ -31,6 +33,7 @@ export interface LeaveRequest {
   actionBy?: string; // Admin Name/Code
   actionDate?: string;
   appliedDate: string;
+  createdAt?: string; // exact timestamp the leave was applied (used by balance calculation)
   odFromTime?: string; // For Hourly OD - format HH:mm
   odToTime?: string;   // For Hourly OD - format HH:mm
   fromTime?: string;   // Generic Hourly Start Time - HH:mm

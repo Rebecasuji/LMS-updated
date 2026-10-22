@@ -162,11 +162,11 @@ export default function AdminDashboard() {
       </div>
 
       <StatCards stats={[
-        { label: 'Total Employees', value: employeesCount, type: 'info' },
-        { label: 'Departments', value: departmentsCount, type: 'info' },
-        { label: 'Pending Requests', value: pendingCount, type: 'pending' },
-        { label: 'Approved', value: approvedCount, type: 'approved' },
-        { label: 'Rejected', value: rejectedCount, type: 'rejected' },
+        { label: 'Total Employees', value: employeesCount, type: 'info', path: '/admin/employees' },
+        { label: 'Departments', value: departmentsCount, type: 'info', path: '/admin/departments' },
+        { label: 'Pending Requests', value: pendingCount, type: 'pending', path: '/admin/view-leaves' },
+        { label: 'Approved', value: approvedCount, type: 'approved', path: '/admin/approved-leaves' },
+        { label: 'Rejected', value: rejectedCount, type: 'rejected', path: '/admin/rejected-leaves' },
       ]} />
 
       {/* Quick Actions or Recent Pending */}

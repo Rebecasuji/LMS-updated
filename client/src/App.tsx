@@ -22,6 +22,8 @@ import IndividualReport from '@/pages/admin/IndividualReport';
 import ResetPassword from '@/pages/ResetPassword';
 import ManageBalances from '@/pages/admin/ManageBalances';
 import LeaveSettingsPage from '@/pages/admin/LeaveSettings';
+import DepartmentsPage from '@/pages/admin/Departments';
+import RejectedLeaves from '@/pages/admin/RejectedLeaves';
 
 function ProtectedRoute({ component: Component, role }: { component: any, role?: 'Admin' | 'Employee' | 'HR' }) {
   const { user, isLoading } = useAuth();
@@ -117,7 +119,7 @@ function AppRoutes() {
         <ProtectedRoute component={ApproveCompOff} role="Admin" />
       </Route>
       <Route path="/admin/departments">
-        <ProtectedRoute component={Employees} role="Admin" />
+        <ProtectedRoute component={DepartmentsPage} role="Admin" />
       </Route>
       <Route path="/admin/employees">
         <ProtectedRoute component={Employees} role="Admin" />
@@ -130,6 +132,9 @@ function AppRoutes() {
       </Route>
       <Route path="/admin/approved-permissions">
         <ProtectedRoute component={ApprovedPermissions} role="Admin" />
+      </Route>
+      <Route path="/admin/rejected-leaves">
+        <ProtectedRoute component={RejectedLeaves} role="Admin" />
       </Route>
       <Route path="/admin/manage-balances">
         <ProtectedRoute component={ManageBalances} role="Admin" />

@@ -1,4 +1,5 @@
 import React from 'react';
+import { useLocation } from 'wouter';
 import {
     Users, Building2, Clock, CheckCircle2, XCircle,
     Calendar, Briefcase, FileText, AlertCircle, PlusCircle,
@@ -11,6 +12,8 @@ export interface Stat {
     value: number | string;
     type: 'info' | 'pending' | 'approved' | 'rejected' | 'quota' | 'total-leaves';
     subtext?: string;
+    path?: string;
+    onClick?: () => void;
 }
 
 interface StatCardsProps {
@@ -21,6 +24,7 @@ const iconMap: Record<string, any> = {
     'Total Employees': Users,
     'Departments': Building2,
     'Pending Leaves': Clock,
+    'Pending Requests': Clock,
     'Approved': CheckCircle2,
     'Rejected': XCircle,
     'Total Casual': PieChart,
@@ -34,12 +38,37 @@ const iconMap: Record<string, any> = {
 };
 
 export const StatCards: React.FC<StatCardsProps> = ({ stats }) => {
+    const [, setLocation] = useLocation();
+
     return (
         <div className="stat-cards-grid">
             {stats.map((stat, index) => {
                 const Icon = iconMap[stat.label] || Users;
+                const isClickable = Boolean(stat.path || stat.onClick);
+
+                const handleClick = () => {
+                    if (stat.onClick) {
+                        stat.onClick();
+                    } else if (stat.path) {
+                        setLocation(stat.path);
+                    }
+                };
+
                 return (
-                    <div key={index} className={`stat-card card-glow-${stat.type}`}>
+                    <div
+                        key={index}
+                        onClick={isClickable ? handleClick : undefined}
+                        className={`stat-card card-glow-${stat.type} ${isClickable ? 'is-clickable' : ''}`}
+                        role={isClickable ? 'button' : undefined}
+                        tabIndex={isClickable ? 0 : undefined}
+                        title={isClickable && stat.path ? `Open ${stat.label}` : undefined}
+                        onKeyDown={isClickable ? (e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                handleClick();
+                            }
+                        } : undefined}
+                    >
                         <div className="stat-card-inner">
                             <div className="stat-card-header">
                                 <span className="stat-label">{stat.label}</span>

@@ -24,6 +24,7 @@ import {
   Plus,
   Pencil,
   PartyPopper,
+  Building2,
 } from 'lucide-react';
 import {
   LeaveSettings,
@@ -42,10 +43,11 @@ import {
 } from '@/lib/settings';
 import { getAllUsersAsync } from '@/lib/storage';
 import { User } from '@/lib/data';
+import { DepartmentsManager } from '@/components/DepartmentsManager';
 
 export default function LeaveSettingsPage() {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState<'leave' | 'shifts' | 'holidays'>('leave');
+  const [activeTab, setActiveTab] = useState<'leave' | 'shifts' | 'holidays' | 'departments'>('leave');
 
   // Leave Settings State
   const [leaveSettings, setLeaveSettings] = useState<LeaveSettings>(DEFAULT_LEAVE_SETTINGS);
@@ -296,17 +298,17 @@ export default function LeaveSettingsPage() {
             <span className="p-2.5 bg-blue-600 text-white rounded-xl shadow-md">
               <CalendarDays className="w-6 h-6" />
             </span>
-            Leave & Shift Settings
+            Settings
           </h1>
           <p className="text-slate-500 text-sm mt-1">
-            Configure advance booking rules for <strong>PL, CL, SL</strong>, manage <strong>Shift Timings</strong>, and control <strong>Government Holidays</strong>.
+            Configure advance booking rules for <strong>PL, CL, SL</strong>, manage <strong>Shift Timings</strong>, control <strong>Government Holidays</strong>, and create <strong>Departments</strong>.
           </p>
         </div>
       </div>
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={(val) => setActiveTab(val as any)} className="w-full">
-        <TabsList className="grid w-full max-w-2xl grid-cols-3 bg-slate-100 p-1 rounded-xl">
+        <TabsList className="grid w-full max-w-3xl grid-cols-4 bg-slate-100 p-1 rounded-xl">
           <TabsTrigger
             value="leave"
             className="rounded-lg font-semibold data-[state=active]:bg-white data-[state=active]:text-blue-700 data-[state=active]:shadow-sm flex items-center gap-2 py-2.5"
@@ -327,6 +329,13 @@ export default function LeaveSettingsPage() {
           >
             <PartyPopper className="w-4 h-4" />
             Govt. Holidays
+          </TabsTrigger>
+          <TabsTrigger
+            value="departments"
+            className="rounded-lg font-semibold data-[state=active]:bg-white data-[state=active]:text-blue-700 data-[state=active]:shadow-sm flex items-center gap-2 py-2.5"
+          >
+            <Building2 className="w-4 h-4" />
+            Departments
           </TabsTrigger>
         </TabsList>
 
@@ -714,9 +723,8 @@ export default function LeaveSettingsPage() {
               return (
                 <Card
                   key={s.id}
-                  className={`border shadow-sm transition-all ${
-                    isDefault ? 'border-emerald-400 bg-emerald-50/30 ring-2 ring-emerald-500/20' : 'border-slate-200 bg-white'
-                  }`}
+                  className={`border shadow-sm transition-all ${isDefault ? 'border-emerald-400 bg-emerald-50/30 ring-2 ring-emerald-500/20' : 'border-slate-200 bg-white'
+                    }`}
                 >
                   <CardHeader className="p-4 pb-2">
                     <div className="flex items-center justify-between">
@@ -847,11 +855,10 @@ export default function LeaveSettingsPage() {
                             <TableCell>
                               <Badge
                                 variant="outline"
-                                className={`text-[11px] font-semibold ${
-                                  isCustom
-                                    ? 'bg-blue-50 text-blue-700 border-blue-200'
-                                    : 'bg-slate-50 text-slate-600 border-slate-200'
-                                }`}
+                                className={`text-[11px] font-semibold ${isCustom
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                  : 'bg-slate-50 text-slate-600 border-slate-200'
+                                  }`}
                               >
                                 Late after {cutoff}
                               </Badge>
@@ -1054,11 +1061,10 @@ export default function LeaveSettingsPage() {
                             <TableCell>
                               <Badge
                                 variant="outline"
-                                className={`text-[11px] font-semibold ${
-                                  isPast
-                                    ? 'bg-slate-50 text-slate-500 border-slate-200'
-                                    : 'bg-green-50 text-green-700 border-green-200'
-                                }`}
+                                className={`text-[11px] font-semibold ${isPast
+                                  ? 'bg-slate-50 text-slate-500 border-slate-200'
+                                  : 'bg-green-50 text-green-700 border-green-200'
+                                  }`}
                               >
                                 {isPast ? 'Past' : 'Upcoming'}
                               </Badge>
@@ -1124,6 +1130,13 @@ export default function LeaveSettingsPage() {
               {savingHolidays ? 'Saving Holidays...' : 'Save Holidays'}
             </Button>
           </div>
+        </TabsContent>
+
+        {/* ==================================================================== */}
+        {/* TAB 4: DEPARTMENTS */}
+        {/* ==================================================================== */}
+        <TabsContent value="departments" className="space-y-6 pt-4">
+          <DepartmentsManager />
         </TabsContent>
       </Tabs>
     </div>

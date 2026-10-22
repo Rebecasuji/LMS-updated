@@ -20,6 +20,22 @@ export async function getAllUsersAsync(includeInactive = false): Promise<User[]>
     const { data, error } = await query;
     if (error) throw error;
 
+    // Department names (by id) and designations kept in the employees table (fallback).
+    const deptNames: Record<string, string> = {};
+    try {
+      const { data: deps } = await supabase.from('departments').select('id,name');
+      (deps || []).forEach((d: any) => { deptNames[String(d.id)] = d.name; });
+    } catch { /* departments table not created yet */ }
+    const empDesignation: Record<string, string> = {};
+    try {
+      const { data: emps } = await supabase.from('employees').select('employee_code,name,designation');
+      (emps || []).forEach((e: any) => {
+        if (!e.designation) return;
+        if (e.employee_code) empDesignation[String(e.employee_code).trim().toUpperCase()] = e.designation;
+        if (e.name) empDesignation[String(e.name).trim().toUpperCase()] = e.designation;
+      });
+    } catch { /* ignore */ }
+
     return (data || []).map((u: any) => {
       const dbRole = (u.role || 'employee').toString().toLowerCase();
       const mappedRole: Role = dbRole === 'admin' ? 'Admin' : dbRole === 'hr' ? 'HR' : 'Employee';
@@ -28,9 +44,14 @@ export async function getAllUsersAsync(includeInactive = false): Promise<User[]>
         code: u.username || u.user_id || '',
         name: u.name || u.username || '',
         role: mappedRole,
-        designation: u.designation || '',
+        designation: u.designation
+          || empDesignation[String(u.username || u.user_id || '').trim().toUpperCase()]
+          || empDesignation[String(u.name || '').trim().toUpperCase()]
+          || '',
         email: u.email || undefined,
         isActive: u.is_active !== false,
+        departmentId: u.department_id ? String(u.department_id) : undefined,
+        department: u.department_id ? (deptNames[String(u.department_id)] || undefined) : undefined,
       };
     });
   } catch (err) {
@@ -105,6 +126,7 @@ export async function getStoredLeaves(): Promise<LeaveRequest[]> {
       actionBy: row.action_by || undefined,
       actionDate: row.action_date || undefined,
       appliedDate: row.created_at ? format(new Date(row.created_at), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
+      createdAt: row.created_at || undefined,
       odFromTime: row.from_time || row.od_from_time || undefined,
       odToTime: row.to_time || row.od_to_time || undefined,
       fromTime: row.from_time || row.od_from_time || undefined,
@@ -690,7 +712,7 @@ export async function getLeaveBalance(employeeCode: string, employeeId?: string)
     const normalizedQueryCode = employeeCode?.trim().toLowerCase();
     const normalizedQueryId = employeeId?.trim().toLowerCase();
 
-    const manualEntry = (normalizedQueryCode && manualMap[normalizedQueryCode]) || (normalizedQueryId && manualMap[normalizedQueryId]);
+    const manualEntry: ManualEntry | undefined = (normalizedQueryCode && manualMap[normalizedQueryCode]) || (normalizedQueryId && manualMap[normalizedQueryId]) || undefined;
 
     const employeeLeaves = leaves.filter(
       l => {
@@ -700,7 +722,7 @@ export async function getLeaveBalance(employeeCode: string, employeeId?: string)
         return (
           (leaveCode === normalizedQueryCode || leaveCode === normalizedQueryId) ||
           (leaveId === normalizedQueryId || leaveId === normalizedQueryCode)
-        ) && l.status === 'Approved';
+        ) && (l.status === 'Approved' || l.status === 'Pending');
       }
     );
 
@@ -713,15 +735,20 @@ export async function getLeaveBalance(employeeCode: string, employeeId?: string)
       return diffDays;
     };
 
-    // Count only leaves applied on or after the day HR/Admin set the manual balance.
-    // Using date-only comparison (YYYY-MM-DD) with >= avoids midnight vs. full-timestamp mismatch.
+    // Leaves that reduce the balance:
+    //  - if HR/Admin set a balance: only leaves applied AFTER they saved it
+    //    (the number they typed already covers anything earlier)
+    //  - if no balance was set: every leave of the current year counts against the full quota
     const filteredLeaves = (manualEntry && manualEntry.updatedAt)
       ? employeeLeaves.filter(l => {
+        if (l.createdAt) {
+          return new Date(l.createdAt).getTime() > new Date(manualEntry.updatedAt as string).getTime();
+        }
         const appliedDate = (l.appliedDate || l.startDate || '').split('T')[0];
         const setupDate = (manualEntry.updatedAt || '').split('T')[0];
         return appliedDate >= setupDate;
       })
-      : employeeLeaves;
+      : employeeLeaves.filter(l => (l.startDate || '').slice(0, 4) === String(new Date().getFullYear()));
 
     const approvedCasual = filteredLeaves
       .filter(l => l.type === 'Casual')
@@ -735,17 +762,25 @@ export async function getLeaveBalance(employeeCode: string, employeeId?: string)
       .filter(l => l.type === 'Privilege' || l.type === 'Earned')
       .reduce((sum, l) => sum + calculateDays(l.startDate, l.endDate), 0);
 
-    const casualUsed = manualEntry ? (manualEntry.casualTaken || 0) + approvedCasual : 0;
-    const sickUsed = manualEntry ? (manualEntry.sickTaken || 0) + approvedSick : 0;
-    const privilegeUsed = manualEntry ? (manualEntry.privilegeTaken || 0) + approvedPrivilege : 0;
+    // The balance HR/Admin enters is what the employee HAS (e.g. CL = 2).
+    // It is stored as "taken" = quota - available, so older saved data keeps working.
+    // Every leave applied afterwards is deducted from it automatically.
+    const QUOTA = { casual: 2, sick: 3, privilege: 10 };
+    const compute = (quota: number, taken: number, deducted: number) => {
+      const opening = quota - taken;                    // balance set by admin (can exceed the yearly quota)
+      const remaining = Math.max(0, opening - deducted);
+      const total = Math.max(quota, opening);
+      const used = Math.max(0, total - remaining);
+      return { total, used, remaining };
+    };
 
-    const casualTotal = 2;
-    const sickTotal = 3;
-    const privilegeTotal = 10;
+    const cas = compute(QUOTA.casual, manualEntry?.casualTaken || 0, approvedCasual);
+    const sck = compute(QUOTA.sick, manualEntry?.sickTaken || 0, approvedSick);
+    const prv = compute(QUOTA.privilege, manualEntry?.privilegeTaken || 0, approvedPrivilege);
 
-    const casualRemaining = Math.max(0, casualTotal - casualUsed);
-    const sickRemaining = Math.max(0, sickTotal - sickUsed);
-    const privilegeRemaining = Math.max(0, privilegeTotal - privilegeUsed);
+    const casualTotal = cas.total, sickTotal = sck.total, privilegeTotal = prv.total;
+    const casualUsed = cas.used, sickUsed = sck.used, privilegeUsed = prv.used;
+    const casualRemaining = cas.remaining, sickRemaining = sck.remaining, privilegeRemaining = prv.remaining;
 
     return {
       casual: {

@@ -10,11 +10,14 @@ import { Search, Save, SlidersHorizontal, User as UserIcon, RefreshCw } from 'lu
 import { useToast } from '@/hooks/use-toast';
 
 interface UserBalanceState {
-  casualTaken: number;
-  sickTaken: number;
-  privilegeTaken: number;
+  casualAvailable: number;
+  sickAvailable: number;
+  privilegeAvailable: number;
   saving?: boolean;
 }
+
+const QUOTAS = { casual: 2, sick: 3, privilege: 10 };
+const FULL_BALANCE = { casualAvailable: QUOTAS.casual, sickAvailable: QUOTAS.sick, privilegeAvailable: QUOTAS.privilege };
 
 export default function ManageBalances() {
   const { toast } = useToast();
@@ -35,12 +38,15 @@ export default function ManageBalances() {
     (userList || []).forEach(u => {
       if (!u || !u.code) return;
       const code = u.code.toLowerCase();
-      const existing = manualMap[code] || { casualTaken: 0, sickTaken: 0, privilegeTaken: 0 };
-      initialBalances[code] = {
-        casualTaken: existing.casualTaken,
-        sickTaken: existing.sickTaken,
-        privilegeTaken: existing.privilegeTaken,
-      };
+      const existing: any = manualMap[code];
+      // Saved data stores "taken"; the admin works with the available balance.
+      initialBalances[code] = existing
+        ? {
+          casualAvailable: QUOTAS.casual - (existing.casualTaken || 0),
+          sickAvailable: QUOTAS.sick - (existing.sickTaken || 0),
+          privilegeAvailable: QUOTAS.privilege - (existing.privilegeTaken || 0),
+        }
+        : { ...FULL_BALANCE };
     });
     setBalances(initialBalances);
 
@@ -57,11 +63,11 @@ export default function ManageBalances() {
       if (result.status === 'fulfilled') {
         const { key, lb } = result.value;
         liveMap[key] = lb;
-        // Update input box state so input fields directly show live total taken
+        // Input boxes show the live balance (admin balance minus leaves applied since)
         initialBalances[key] = {
-          casualTaken: lb.casual.used,
-          sickTaken: lb.sick.used,
-          privilegeTaken: lb.privilege.used,
+          casualAvailable: lb.casual.remaining,
+          sickAvailable: lb.sick.remaining,
+          privilegeAvailable: lb.privilege.remaining,
         };
       }
     });
@@ -78,14 +84,14 @@ export default function ManageBalances() {
     setRefreshing(false);
   };
 
-  const handleTakenChange = (code: string, field: 'casualTaken' | 'sickTaken' | 'privilegeTaken', val: string) => {
+  const handleAvailableChange = (code: string, field: 'casualAvailable' | 'sickAvailable' | 'privilegeAvailable', val: string) => {
     if (!code) return;
     const num = Math.max(0, parseInt(val) || 0);
     const key = code.toLowerCase();
     setBalances(prev => ({
       ...prev,
       [key]: {
-        ...(prev[key] || { casualTaken: 0, sickTaken: 0, privilegeTaken: 0 }),
+        ...(prev[key] || { ...FULL_BALANCE }),
         [field]: num
       }
     }));
@@ -94,20 +100,21 @@ export default function ManageBalances() {
   const handleSave = async (user: User) => {
     if (!user || !user.code) return;
     const key = user.code.toLowerCase();
-    const current = balances[key] || { casualTaken: 0, sickTaken: 0, privilegeTaken: 0 };
+    const current = balances[key] || { ...FULL_BALANCE };
 
     setBalances(prev => ({ ...prev, [key]: { ...prev[key], saving: true } }));
 
     try {
+      // Stored as taken = quota - available (keeps the existing table format)
       await saveManualBalance(user.code, {
-        casualTaken: current.casualTaken,
-        sickTaken: current.sickTaken,
-        privilegeTaken: current.privilegeTaken
+        casualTaken: QUOTAS.casual - current.casualAvailable,
+        sickTaken: QUOTAS.sick - current.sickAvailable,
+        privilegeTaken: QUOTAS.privilege - current.privilegeAvailable
       }, user);
 
       toast({
         title: "✅ Balances Updated",
-        description: `Updated taken leaves for ${user.name} (${user.code}). Remaining: Casual (${Math.max(0, 2 - current.casualTaken)}/2), Sick (${Math.max(0, 3 - current.sickTaken)}/3), Privilege (${Math.max(0, 10 - current.privilegeTaken)}/10)`,
+        description: `Balance set for ${user.name} (${user.code}): Casual ${current.casualAvailable}, Sick ${current.sickAvailable}, Privilege ${current.privilegeAvailable}. It reduces automatically as leaves are applied.`,
         className: "bg-green-500/10 border-green-500/20 text-green-700 font-medium"
       });
     } catch (e) {
@@ -138,7 +145,7 @@ export default function ManageBalances() {
             <SlidersHorizontal className="w-8 h-8 text-primary" /> Manage Employee Leave Balances
           </h2>
           <p className="text-slate-600 mt-1">
-            Set initial taken leaves per employee. Yearly Quotas: Casual (2), Sick (3), Privilege (10) — Total 15 Days.
+            Set the leave balance each employee has. It shows on their Apply Leave page and reduces automatically as they apply leaves. Yearly Quotas: Casual (2), Sick (3), Privilege (10) — Total 15 Days.
           </p>
         </div>
         <Button variant="outline" onClick={handleRefresh} disabled={refreshing} className="flex items-center gap-2 self-start">
@@ -180,7 +187,7 @@ export default function ManageBalances() {
             <div>
               <CardTitle className="text-xl font-bold text-slate-900">All Employees & Staff</CardTitle>
               <CardDescription className="text-slate-500">
-                Manually input taken leaves for each employee to calculate their live remaining balance.
+                Enter the balance available for each employee. Leaves they apply for are deducted from it automatically.
               </CardDescription>
             </div>
             <div className="relative w-full md:w-72">
@@ -206,9 +213,9 @@ export default function ManageBalances() {
                   <TableRow className="border-slate-200 bg-slate-50">
                     <TableHead className="font-bold text-slate-700">Employee</TableHead>
                     <TableHead className="font-bold text-slate-700">Role & Designation</TableHead>
-                    <TableHead className="font-bold text-slate-700 text-center">Casual Taken (out of 2)</TableHead>
-                    <TableHead className="font-bold text-slate-700 text-center">Sick Taken (out of 3)</TableHead>
-                    <TableHead className="font-bold text-slate-700 text-center">Privilege Taken (out of 10)</TableHead>
+                    <TableHead className="font-bold text-slate-700 text-center">Casual Balance (quota 2)</TableHead>
+                    <TableHead className="font-bold text-slate-700 text-center">Sick Balance (quota 3)</TableHead>
+                    <TableHead className="font-bold text-slate-700 text-center">Privilege Balance (quota 10)</TableHead>
                     <TableHead className="font-bold text-slate-700 text-center">Remaining Balance</TableHead>
                     <TableHead className="font-bold text-slate-700 text-right">Action</TableHead>
                   </TableRow>
@@ -216,12 +223,12 @@ export default function ManageBalances() {
                 <TableBody>
                   {filteredUsers.map((u) => {
                     const key = u.code.toLowerCase();
-                    const b = balances[key] || { casualTaken: 0, sickTaken: 0, privilegeTaken: 0 };
+                    const b = balances[key] || { casualAvailable: 0, sickAvailable: 0, privilegeAvailable: 0 };
                     const live = liveBalances[key];
                     // Use live balance (includes new approved leaves) if available, else fall back to manual math
-                    const casRemaining = live ? live.casual.remaining : Math.max(0, 2 - b.casualTaken);
-                    const sickRemaining = live ? live.sick.remaining : Math.max(0, 3 - b.sickTaken);
-                    const privRemaining = live ? live.privilege.remaining : Math.max(0, 10 - b.privilegeTaken);
+                    const casRemaining = live ? live.casual.remaining : b.casualAvailable;
+                    const sickRemaining = live ? live.sick.remaining : b.sickAvailable;
+                    const privRemaining = live ? live.privilege.remaining : b.privilegeAvailable;
                     const totalRemaining = casRemaining + sickRemaining + privRemaining;
 
                     return (
@@ -252,12 +259,11 @@ export default function ManageBalances() {
                             <Input
                               type="number"
                               min="0"
-                              max="2"
-                              value={b.casualTaken}
-                              onChange={(e) => handleTakenChange(u.code, 'casualTaken', e.target.value)}
+                              value={b.casualAvailable}
+                              onChange={(e) => handleAvailableChange(u.code, 'casualAvailable', e.target.value)}
                               className="w-16 text-center font-bold bg-white border-slate-200"
                             />
-                            <span className="text-xs text-slate-400 font-medium">/ 2</span>
+                            <span className="text-xs text-slate-400 font-medium">days</span>
                           </div>
                         </TableCell>
 
@@ -267,12 +273,11 @@ export default function ManageBalances() {
                             <Input
                               type="number"
                               min="0"
-                              max="3"
-                              value={b.sickTaken}
-                              onChange={(e) => handleTakenChange(u.code, 'sickTaken', e.target.value)}
+                              value={b.sickAvailable}
+                              onChange={(e) => handleAvailableChange(u.code, 'sickAvailable', e.target.value)}
                               className="w-16 text-center font-bold bg-white border-slate-200"
                             />
-                            <span className="text-xs text-slate-400 font-medium">/ 3</span>
+                            <span className="text-xs text-slate-400 font-medium">days</span>
                           </div>
                         </TableCell>
 
@@ -282,12 +287,11 @@ export default function ManageBalances() {
                             <Input
                               type="number"
                               min="0"
-                              max="10"
-                              value={b.privilegeTaken}
-                              onChange={(e) => handleTakenChange(u.code, 'privilegeTaken', e.target.value)}
+                              value={b.privilegeAvailable}
+                              onChange={(e) => handleAvailableChange(u.code, 'privilegeAvailable', e.target.value)}
                               className="w-16 text-center font-bold bg-white border-slate-200"
                             />
-                            <span className="text-xs text-slate-400 font-medium">/ 10</span>
+                            <span className="text-xs text-slate-400 font-medium">days</span>
                           </div>
                         </TableCell>
 

@@ -1,5 +1,7 @@
 import { getAllUsersAsync, setUserActive } from '@/lib/storage';
 import { useAuth } from '@/context/AuthContext';
+import { Department, getDepartments, saveEmployeeProfile } from '@/lib/departments';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
@@ -25,29 +27,50 @@ export default function Employees() {
   const [editingUser, setEditingUser] = useState<any>(null);
   const [editName, setEditName] = useState('');
   const [editDesignation, setEditDesignation] = useState('');
+  const [editDepartmentId, setEditDepartmentId] = useState('none');
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [saving, setSaving] = useState(false);
   const { toast } = useToast();
 
   // Load from the database, including inactive employees (only visible on this page)
   useEffect(() => {
     getAllUsersAsync(true).then(setUsers);
+    getDepartments().then(setDepartments);
   }, []);
 
   const filteredUsers = users.filter(u =>
     (showInactive || u.isActive !== false) &&
     (u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       u.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (u.designation || '').toLowerCase().includes(searchTerm.toLowerCase()))
+      (u.designation || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (u.department || '').toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
   const handleEdit = (user: any) => {
     setEditingUser(user);
     setEditName(user.name);
     setEditDesignation(user.designation);
+    setEditDepartmentId(user.departmentId || 'none');
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingUser) return;
-    setUsers(prev => prev.map(u => u.id === editingUser.id ? { ...u, name: editName, designation: editDesignation } : u));
+    const departmentId = editDepartmentId === 'none' ? null : editDepartmentId;
+    setSaving(true);
+    const res = await saveEmployeeProfile(editingUser.id, editingUser.code, {
+      name: editName,
+      designation: editDesignation,
+      departmentId,
+    });
+    setSaving(false);
+    if (!res.ok) {
+      toast({ title: "Error", description: res.error || "Could not save changes", variant: "destructive" });
+      return;
+    }
+    const deptName = departments.find(d => d.id === departmentId)?.name;
+    setUsers(prev => prev.map(u => u.id === editingUser.id
+      ? { ...u, name: editName, designation: editDesignation, departmentId: departmentId || undefined, department: deptName }
+      : u));
     setEditingUser(null);
     toast({
       title: "Success",
@@ -121,6 +144,7 @@ export default function Employees() {
                 <TableHead className="text-slate-500 font-bold">Code</TableHead>
                 <TableHead className="text-slate-500 font-bold">Name</TableHead>
                 <TableHead className="text-slate-500 font-bold">Designation</TableHead>
+                <TableHead className="text-slate-500 font-bold">Department</TableHead>
                 <TableHead className="text-slate-500 font-bold">Role</TableHead>
                 <TableHead className="text-slate-500 font-bold">Status</TableHead>
                 <TableHead className="text-slate-500 font-bold">Actions</TableHead>
@@ -132,6 +156,7 @@ export default function Employees() {
                   <TableCell className="font-mono text-primary font-medium">{user.code}</TableCell>
                   <TableCell className="font-bold text-slate-900">{user.name}</TableCell>
                   <TableCell className="text-slate-600">{user.designation}</TableCell>
+                  <TableCell className="text-slate-600">{user.department || <span className="text-slate-300">—</span>}</TableCell>
                   <TableCell>
                     <Badge variant={user.role === 'Admin' ? 'default' : 'secondary'} className={user.role === 'Admin' ? 'bg-primary/10 text-primary hover:bg-primary/20 border-primary/20' : 'bg-slate-100 text-slate-600'}>
                       {user.role}
@@ -203,6 +228,23 @@ export default function Employees() {
                 data-testid="input-edit-designation"
               />
             </div>
+            <div className="space-y-2">
+              <Label className="text-slate-700 font-medium">Department</Label>
+              <Select value={editDepartmentId} onValueChange={setEditDepartmentId}>
+                <SelectTrigger className="bg-white border-slate-200 text-slate-900" data-testid="select-edit-department">
+                  <SelectValue placeholder="Select department" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Not assigned</SelectItem>
+                  {departments.map(d => (
+                    <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {departments.length === 0 && (
+                <p className="text-xs text-slate-500">No departments yet. Create them in Settings → Departments.</p>
+              )}
+            </div>
           </div>
           <DialogFooter>
             <Button
@@ -214,10 +256,11 @@ export default function Employees() {
             </Button>
             <Button
               onClick={handleSaveEdit}
+              disabled={saving}
               className="bg-primary hover:bg-primary/90"
               data-testid="button-save-edit"
             >
-              Save Changes
+              {saving ? 'Saving...' : 'Save Changes'}
             </Button>
           </DialogFooter>
         </DialogContent>
