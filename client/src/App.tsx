@@ -21,6 +21,7 @@ import Reports from '@/pages/Reports';
 import IndividualReport from '@/pages/admin/IndividualReport';
 import ResetPassword from '@/pages/ResetPassword';
 import ManageBalances from '@/pages/admin/ManageBalances';
+import LeaveSettingsPage from '@/pages/admin/LeaveSettings';
 
 function ProtectedRoute({ component: Component, role }: { component: any, role?: 'Admin' | 'Employee' | 'HR' }) {
   const { user, isLoading } = useAuth();
@@ -132,6 +133,9 @@ function AppRoutes() {
       </Route>
       <Route path="/admin/manage-balances">
         <ProtectedRoute component={ManageBalances} role="Admin" />
+      </Route>
+      <Route path="/admin/leave-settings">
+        <ProtectedRoute component={LeaveSettingsPage} role="Admin" />
       </Route>
 
       {/* Reports - Accessible by Admin and HR */}

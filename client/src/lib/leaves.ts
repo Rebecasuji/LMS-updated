@@ -16,11 +16,11 @@ export function useLeaves() {
 
   const addLeave = async (leave: Omit<LeaveRequest, "id" | "status" | "appliedDate">) => {
     const newLeave: LeaveRequest = {
+      ...leave,
       id: Math.random().toString(36).substr(2, 9),
       employeeId: (leave as any).employeeId || '',
       employeeName: (leave as any).employeeName || '',
       employeeCode: (leave as any).employeeCode || '',
-      ...leave,
       status: "Pending",
       appliedDate: new Date().toISOString().split('T')[0],
     } as LeaveRequest;

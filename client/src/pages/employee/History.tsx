@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Sheet,
   SheetContent,
@@ -17,7 +18,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from '@/components/ui/sheet';
-import { Filter, RotateCcw, Search } from 'lucide-react';
+import { Filter, RotateCcw, Search, CalendarDays } from 'lucide-react';
 
 type LeaveFilters = {
   type: string;
@@ -48,6 +49,7 @@ export default function LeaveHistory() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [draftFilters, setDraftFilters] = useState<LeaveFilters>(emptyFilters);
   const [appliedFilters, setAppliedFilters] = useState<LeaveFilters>(emptyFilters);
+  const [selectedYear, setSelectedYear] = useState<string>(String(new Date().getFullYear()));
 
   useEffect(() => {
     let mounted = true;
@@ -83,7 +85,33 @@ export default function LeaveHistory() {
   const statuses = ['Pending', 'Approved', 'Rejected', 'Cancelled'];
   const durations = Array.from(new Set(leaves.map((leave) => leave.duration).filter(Boolean))).sort();
 
-  const filteredLeaves = leaves.filter((leave) => {
+  // Build year options: always include current year and previous 3 years, plus any years found in data
+  const currentYearNum = new Date().getFullYear();
+  const baseYears = [
+    String(currentYearNum),
+    String(currentYearNum - 1),
+    String(currentYearNum - 2),
+    String(currentYearNum - 3),
+  ];
+  const allYearsSet = new Set<string>(baseYears);
+  leaves.forEach((l) => {
+    const y1 = (l.startDate || '').slice(0, 4);
+    const y2 = (l.appliedDate || '').slice(0, 4);
+    if (y1 && /^\d{4}$/.test(y1)) allYearsSet.add(y1);
+    if (y2 && /^\d{4}$/.test(y2)) allYearsSet.add(y2);
+  });
+  const leaveYears = Array.from(allYearsSet).sort().reverse();
+
+  // Filter by year first
+  const yearFilteredLeaves = selectedYear === 'all'
+    ? leaves
+    : leaves.filter((leave) => {
+        const startYear = (leave.startDate || '').slice(0, 4);
+        const appliedYear = (leave.appliedDate || '').slice(0, 4);
+        return startYear === selectedYear || appliedYear === selectedYear;
+      });
+
+  const filteredLeaves = yearFilteredLeaves.filter((leave) => {
     const leaveStart = dateKey(leave.startDate);
     const leaveEnd = dateKey(leave.endDate);
     const appliedDate = dateKey(leave.appliedDate);
@@ -126,15 +154,32 @@ export default function LeaveHistory() {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="relative w-full max-w-xs">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <Input
-            aria-label="Search leave history"
-            placeholder="Search leave history..."
-            value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
-            className="h-9 border-slate-200 bg-white pl-9"
-          />
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative w-full max-w-xs">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Input
+              aria-label="Search leave history"
+              placeholder="Search leave history..."
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              className="h-9 border-slate-200 bg-white pl-9"
+            />
+          </div>
+          {/* Year Selection Dropdown */}
+          <div className="flex items-center gap-2">
+            <CalendarDays className="w-4 h-4 text-slate-500" />
+            <Select value={selectedYear} onValueChange={setSelectedYear}>
+              <SelectTrigger className="h-9 text-xs bg-white border-slate-200 w-32 font-semibold">
+                <SelectValue placeholder="Select Year" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all" className="text-xs">All Years</SelectItem>
+                {leaveYears.map((y) => (
+                  <SelectItem key={y} value={y} className="text-xs">{y}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {activeFilterCount > 0 && (
@@ -302,8 +347,18 @@ export default function LeaveHistory() {
             <TableBody>
               {filteredLeaves.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8 text-slate-500 italic">
-                    No records found
+                  <TableCell colSpan={9} className="text-center py-12 text-slate-500">
+                    <div className="flex flex-col items-center justify-center space-y-2">
+                      <CalendarDays className="w-10 h-10 text-slate-300 stroke-[1.5]" />
+                      <p className="font-semibold text-slate-700 text-sm">
+                        {selectedYear !== 'all' ? `No leaves found for ${selectedYear}` : 'No leave records found'}
+                      </p>
+                      <p className="text-xs text-slate-400 max-w-sm">
+                        {selectedYear !== 'all'
+                          ? `No leave records have been saved or seeded for the year ${selectedYear}.`
+                          : 'Try adjusting your search criteria or filters.'}
+                      </p>
+                    </div>
                   </TableCell>
                 </TableRow>
               ) : (

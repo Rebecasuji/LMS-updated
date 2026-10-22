@@ -1,0 +1,30 @@
+{
+  "defaultShiftId": "shift_1000",
+  "shifts": [
+    {
+      "id": "shift_0930",
+      "name": "Early Shift (9:30 AM - 6:30 PM)",
+      "startTime": "09:30 AM",
+      "endTime": "06:30 PM",
+      "graceMinutes": 15
+    },
+    {
+      "id": "shift_1000",
+      "name": "General Shift (10:00 AM - 7:00 PM)",
+      "startTime": "10:00 AM",
+      "endTime": "07:00 PM",
+      "graceMinutes": 15
+    },
+    {
+      "id": "shift_1100",
+      "name": "Late Shift (11:00 AM - 8:00 PM)",
+      "startTime": "11:00 AM",
+      "endTime": "08:00 PM",
+      "graceMinutes": 15
+    }
+  ],
+  "employeeShifts": {
+    "E0065": "shift_1100",
+    "E0032": "shift_0930"
+  }
+}

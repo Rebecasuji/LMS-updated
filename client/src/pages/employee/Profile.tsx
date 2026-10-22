@@ -2,18 +2,19 @@ import { useAuth } from '@/context/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { User as UserIcon, Mail, Briefcase, Building, AlertCircle, Calendar } from 'lucide-react';
-import { ALL_HOLIDAYS } from '@/lib/data';
 import { getLeaveBalance } from '@/lib/storage';
 import { LeaveBalanceCard } from '@/components/LeaveBalanceCard';
 import { useState, useEffect } from 'react';
+import { fetchHolidaySettings, HolidayEntry } from '@/lib/settings';
 
 export default function Profile() {
   const { user } = useAuth();
   const [balance, setBalance] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [holidays, setHolidays] = useState<HolidayEntry[]>([]);
 
   useEffect(() => {
-    const loadBalance = async () => {
+    const loadData = async () => {
       if (user?.code || user?.id) {
         try {
           const data = await getLeaveBalance(user.code, user.id);
@@ -22,20 +23,25 @@ export default function Profile() {
           console.error('Failed to load balance', err);
         }
       }
+      // Load holidays from settings
+      try {
+        const hs = await fetchHolidaySettings();
+        setHolidays(hs.holidays || []);
+      } catch (err) {
+        console.error('Failed to load holidays', err);
+      }
       setLoading(false);
     };
-    loadBalance();
+    loadData();
   }, [user]);
 
   if (!user) return null;
 
   // Get upcoming holidays (from current date onwards)
   const today = new Date();
-  const upcomingHolidays = ALL_HOLIDAYS
+  const upcomingHolidays = holidays
     .filter(h => new Date(h.date) > today)
     .slice(0, 8);
-
-  // upcomingHolidays computed below
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">

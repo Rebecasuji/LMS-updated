@@ -1,0 +1,29 @@
+{
+  "privilege": {
+    "enabled": true,
+    "minNoticeDays": 5,
+    "allowPastDates": false,
+    "maxPastDays": 0,
+    "maxFutureDays": 60,
+    "allowEmergencyOverride": true,
+    "description": "Requires 5 days advance booking. Short-notice allowed only with an emergency reason."
+  },
+  "casual": {
+    "enabled": true,
+    "minNoticeDays": 2,
+    "allowPastDates": false,
+    "maxPastDays": 0,
+    "maxFutureDays": 20,
+    "allowEmergencyOverride": false,
+    "description": "Must be applied at least 1 day in advance. Past dates are not allowed."
+  },
+  "sick": {
+    "enabled": true,
+    "minNoticeDays": 0,
+    "allowPastDates": true,
+    "maxPastDays": 2,
+    "maxFutureDays": 5,
+    "allowEmergencyOverride": false,
+    "description": "Can be applied on the same day or retrospectively up to 2 days in the past."
+  }
+}

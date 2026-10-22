@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, CalendarDays, HeartPulse, Info, Sparkles, Clock } from 'lucide-react';
 import { validateCompOffCoverage, consumeCompOffForLeave, getCompOffBalance, CompOffCoverage } from '@/lib/compoff';
 import { notifyUser, notifyAdminAndHR } from '@/lib/notifications';
 import { supabase } from '@/lib/supabaseClient';
@@ -25,6 +25,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  LeaveSettings,
+  DEFAULT_LEAVE_SETTINGS,
+  fetchLeaveSettings,
+  getPermittedDateRange,
+  validateLeaveDates,
+} from '@/lib/settings';
 
 const leaveSchema = z.object({
   type: z.enum(['Casual', 'Sick', 'OD', 'Comp Off', 'Privilege', 'LWP', 'Earned', 'OT']),
@@ -84,26 +91,36 @@ export default function ApplyLeave() {
   const [submitting, setSubmitting] = useState(false);
   const [isEmergencyPrivilege, setIsEmergencyPrivilege] = useState(false);
   const [emergencyReason, setEmergencyReason] = useState('');
+  const [leaveSettings, setLeaveSettings] = useState<LeaveSettings>(DEFAULT_LEAVE_SETTINGS);
+
+  useEffect(() => {
+    fetchLeaveSettings().then(setLeaveSettings);
+  }, []);
 
   const getMinPrivilegeDateString = () => {
-    const d = new Date();
-    d.setDate(d.getDate() + 5);
-    return d.toISOString().split('T')[0];
+    const range = getPermittedDateRange('Privilege', leaveSettings, false);
+    return range.minDate || '';
   };
 
   const getStartDateMin = () => {
-    if (watchedLeaveType === 'Privilege' && !isEmergencyPrivilege) {
-      return getMinPrivilegeDateString();
-    }
-    return undefined;
+    const range = getPermittedDateRange(watchedLeaveType, leaveSettings, isEmergencyPrivilege);
+    return range.minDate;
+  };
+
+  const getStartDateMax = () => {
+    const range = getPermittedDateRange(watchedLeaveType, leaveSettings, isEmergencyPrivilege);
+    return range.maxDate;
   };
 
   const getEndDateMin = () => {
     if (watchedStartDate) return watchedStartDate;
-    if (watchedLeaveType === 'Privilege' && !isEmergencyPrivilege) {
-      return getMinPrivilegeDateString();
-    }
-    return undefined;
+    const range = getPermittedDateRange(watchedLeaveType, leaveSettings, isEmergencyPrivilege);
+    return range.minDate;
+  };
+
+  const getEndDateMax = () => {
+    const range = getPermittedDateRange(watchedLeaveType, leaveSettings, isEmergencyPrivilege);
+    return range.maxDate;
   };
 
   const fetchBalance = () => {
@@ -202,30 +219,30 @@ export default function ApplyLeave() {
       });
     }
 
-    if (data.type === 'Privilege') {
-      const todayDate = new Date();
-      todayDate.setHours(0, 0, 0, 0);
-      const selDate = new Date(data.startDate);
-      selDate.setHours(0, 0, 0, 0);
-      const diffDays = Math.ceil((selDate.getTime() - todayDate.getTime()) / (1000 * 3600 * 24));
+    // Enforce dynamic admin leave settings (notice period, past dates, max future days)
+    const dateCheck = validateLeaveDates(
+      data.type,
+      data.startDate,
+      data.endDate,
+      leaveSettings,
+      isEmergencyPrivilege
+    );
+    if (!dateCheck.valid) {
+      toast({
+        title: "Date Policy Restriction",
+        description: dateCheck.error || "Selected dates violate company leave booking policy.",
+        variant: "destructive"
+      });
+      return;
+    }
 
-      if (diffDays < 5 && !isEmergencyPrivilege) {
-        toast({
-          title: "5-Day Advance Notice Required",
-          description: "Standard Privilege Leave must be applied at least 5 days in advance. Please use the Emergency Request option for short-notice leave.",
-          variant: "destructive"
-        });
-        return;
-      }
-
-      if (isEmergencyPrivilege && (!emergencyReason || emergencyReason.trim().length < 5)) {
-        toast({
-          title: "Emergency Reason Required",
-          description: "Please enter a detailed reason for applying short-notice Privilege Leave.",
-          variant: "destructive"
-        });
-        return;
-      }
+    if (data.type === 'Privilege' && isEmergencyPrivilege && (!emergencyReason || emergencyReason.trim().length < 5)) {
+      toast({
+        title: "Emergency Reason Required",
+        description: "Please enter a detailed reason for applying short-notice Privilege Leave.",
+        variant: "destructive"
+      });
+      return;
     }
 
     // Comp Off: if requested days exceed approved balance, block submission and show error toast
@@ -541,6 +558,7 @@ export default function ApplyLeave() {
                 <Input
                   type="date"
                   min={getStartDateMin()}
+                  max={getStartDateMax()}
                   disabled={watchedLeaveType === 'Comp Off' && compOffBalanceDays === 0}
                   {...form.register('startDate')}
                   className="bg-white border-slate-200 text-slate-900 disabled:bg-slate-100 disabled:cursor-not-allowed"
@@ -552,6 +570,7 @@ export default function ApplyLeave() {
                 <Input
                   type="date"
                   min={getEndDateMin()}
+                  max={getEndDateMax()}
                   disabled={watchedLeaveType === 'Comp Off' && compOffBalanceDays === 0}
                   {...form.register('endDate')}
                   className="bg-white border-slate-200 text-slate-900 disabled:bg-slate-100 disabled:cursor-not-allowed"
@@ -560,16 +579,105 @@ export default function ApplyLeave() {
               </div>
             </div>
 
+            {/* 1. Casual Leave Indication Card */}
+            {watchedLeaveType === 'Casual' && (() => {
+              const rule = leaveSettings.casual;
+              const range = getPermittedDateRange('Casual', leaveSettings);
+              return (
+                <div className="rounded-xl border border-blue-200 bg-gradient-to-r from-blue-50/90 to-indigo-50/70 p-4 text-xs text-blue-950 space-y-2.5 shadow-sm animate-in fade-in duration-300">
+                  <div className="flex items-center gap-2 font-bold text-sm text-blue-900 border-b border-blue-200/70 pb-2">
+                    <CalendarDays className="w-4 h-4 text-blue-600" />
+                    <span>Casual Leave (CL) Policy & Booking Rules</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    <div className="bg-white/80 p-2.5 rounded-lg border border-blue-100 flex items-start gap-2">
+                      <Clock className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-semibold block text-blue-900">Advance Notice:</span>
+                        {rule.minNoticeDays > 0 ? (
+                          <span className="text-slate-600">
+                            Requires <strong>{rule.minNoticeDays} day(s) advance notice</strong> (Earliest selectable date: <strong className="text-blue-700">{range.minDate}</strong>).
+                          </span>
+                        ) : (
+                          <span className="text-emerald-700 font-medium">
+                            ✅ <strong>Same-day application enabled</strong> (You can apply starting today).
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-white/80 p-2.5 rounded-lg border border-blue-100 flex items-start gap-2">
+                      <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-semibold block text-blue-900">Past & Future Limits:</span>
+                        {rule.allowPastDates && rule.maxPastDays > 0 ? (
+                          <span className="text-slate-600">
+                            ⏪ Backdating: Up to <strong>{rule.maxPastDays} day(s) in past</strong>. Max future booking: <strong>{rule.maxFutureDays} days</strong>.
+                          </span>
+                        ) : (
+                          <span className="text-slate-600">
+                            Past dates blocked by Admin policy. Max future booking: <strong>{rule.maxFutureDays} days</strong>.
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* 2. Sick Leave Indication Card */}
+            {watchedLeaveType === 'Sick' && (() => {
+              const rule = leaveSettings.sick;
+              const range = getPermittedDateRange('Sick', leaveSettings);
+              return (
+                <div className="rounded-xl border border-rose-200 bg-gradient-to-r from-rose-50/90 to-red-50/70 p-4 text-xs text-rose-950 space-y-2.5 shadow-sm animate-in fade-in duration-300">
+                  <div className="flex items-center gap-2 font-bold text-sm text-rose-900 border-b border-rose-200/70 pb-2">
+                    <HeartPulse className="w-4 h-4 text-rose-600" />
+                    <span>Sick Leave (SL) Medical Policy</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    <div className="bg-white/80 p-2.5 rounded-lg border border-rose-100 flex items-start gap-2">
+                      <Clock className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-semibold block text-rose-900">Medical Backdating / Retrospective:</span>
+                        {rule.allowPastDates && rule.maxPastDays > 0 ? (
+                          <span className="text-slate-700">
+                            ⏪ You can apply for <strong>today or up to {rule.maxPastDays} day(s) backdated</strong> (Earliest allowed: <strong className="text-rose-700">{range.minDate}</strong>).
+                          </span>
+                        ) : (
+                          <span className="text-slate-700">
+                            Must be applied starting from today. Past dates are blocked.
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-white/80 p-2.5 rounded-lg border border-rose-100 flex items-start gap-2">
+                      <Info className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-semibold block text-rose-900">Future Limit:</span>
+                        <span className="text-slate-700">
+                          Sick leave is for immediate recovery (Max future limit: <strong>{rule.maxFutureDays} days</strong>).
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* 3. Privilege Leave Indication Card */}
             {watchedLeaveType === 'Privilege' && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm space-y-3">
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2 text-amber-900 font-medium">
                     <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
                     <div>
-                      <span>Privilege Leave requires <strong>5 days advance notice</strong>.</span>
+                      <span>Privilege Leave requires <strong>{leaveSettings.privilege.minNoticeDays} days advance notice</strong>.</span>
                       {!isEmergencyPrivilege && (
                         <span className="block text-xs text-amber-700 font-normal">
-                          Earliest standard start date: <strong>{getMinPrivilegeDateString()}</strong>
+                          Earliest standard start date: <strong>{getMinPrivilegeDateString()}</strong> (Max limit: {leaveSettings.privilege.maxFutureDays} days)
                         </span>
                       )}
                     </div>

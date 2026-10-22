@@ -11,6 +11,9 @@ import {
 
 import { getNotificationEmailsServer, supabaseServer } from "./supabaseServerClient";
 import crypto from "crypto";
+import { cliqService } from "./cliq";
+import { generateDailyAttendanceReport } from "./attendanceReport";
+import { getLeaveSettings, saveLeaveSettings, getShiftSettings, saveShiftSettings, getHolidaySettings, saveHolidaySettings } from "./settingsManager";
 
 
 export async function registerRoutes(
@@ -81,6 +84,19 @@ export async function registerRoutes(
         html: emailContent,
         type: 'permission'
       });
+
+      // Also dispatch instant Zoho Cliq notification to #teaminformation
+      cliqService.sendPermissionNotification({
+        employeeName,
+        employeeCode: req.body.employeeCode,
+        permissionType,
+        date,
+        startTime,
+        endTime,
+        reason,
+        isLOPApplicable,
+        status: 'Pending',
+      }).catch((err) => console.error('[ZOHO-CLIQ] Permission notification alert failed:', err));
 
       res.json({
         success: sent,
@@ -245,6 +261,23 @@ export async function registerRoutes(
       if (resp.error) {
         console.error('Error inserting leave:', resp.error);
         return res.status(500).json({ success: false, message: resp.error.message || "Database error during insertion" });
+      }
+
+      // Automatically send notification to Zoho Cliq channel
+      const insertedLeave = Array.isArray(resp.data) && resp.data[0] ? resp.data[0] : null;
+      if (insertedLeave) {
+        const empName = leave.employeeName || insertedLeave.employee_name || insertedLeave.username || insertedLeave.user_id;
+        cliqService.sendLeaveNotification({
+          id: insertedLeave.id,
+          employeeName: empName,
+          leaveType: insertedLeave.leave_type,
+          startDate: insertedLeave.start_date,
+          endDate: insertedLeave.end_date,
+          appliedDate: (insertedLeave.created_at || '').split('T')[0],
+          status: insertedLeave.status || 'Pending',
+          reason: insertedLeave.reason,
+          duration: insertedLeave.leave_duration_type,
+        }).catch((err) => console.error('[ZOHO-CLIQ] Failed to send leave notification:', err));
       }
 
       return res.status(200).json({ success: true, data: resp.data });
@@ -416,5 +449,243 @@ export async function registerRoutes(
   // use storage to perform CRUD operations on the storage interface
   // e.g. storage.insertUser(user) or storage.getUserByUsername(username)
 
+  // Endpoint to update leave status and dispatch notification to Zoho Cliq
+  app.post("/api/update-leave-status", async (req, res) => {
+    try {
+      const { id, status, actionBy, reason } = req.body;
+      if (!id || !status) {
+        return res.status(400).json({ success: false, message: "Missing id or status" });
+      }
+
+      const db = supabaseServer;
+      if (!db) {
+        return res.status(500).json({ success: false, message: "Database server unavailable" });
+      }
+
+      const { data: updatedLeave, error } = await (db.from("leaves") as any)
+        .update({
+          status,
+          action_by: actionBy,
+          action_date: new Date().toISOString(),
+          reason_for_action: reason || null,
+        })
+        .eq("id", parseInt(id))
+        .select();
+
+      if (error) {
+        console.error("Error updating leave in Supabase:", error);
+        return res.status(500).json({ success: false, message: error.message });
+      }
+
+      // Dispatch Cliq status notification (Approved or Rejected)
+      if (updatedLeave && updatedLeave[0] && (status === "Approved" || status === "Rejected")) {
+        const row = updatedLeave[0];
+        cliqService.sendLeaveStatusUpdate({
+          id: row.id,
+          employeeName: row.employee_name || row.username || row.user_id,
+          leaveType: row.leave_type,
+          startDate: row.start_date,
+          endDate: row.end_date,
+          status,
+          actionBy: actionBy || "Manager",
+          reason,
+        }).catch((err) => console.error("[ZOHO-CLIQ] Status update alert failed:", err));
+      }
+
+      res.json({ success: true, data: updatedLeave });
+    } catch (err: any) {
+      console.error("Error in /api/update-leave-status:", err);
+      res.status(500).json({ success: false, message: err?.message || "Internal server error" });
+    }
+  });
+
+  app.post("/api/update-permission-status", async (req, res) => {
+    try {
+      const { id, status, actionBy, reason, employeeName, permissionType, date, startTime, endTime } = req.body;
+      if (!id || !status) {
+        return res.status(400).json({ success: false, message: "Missing id or status" });
+      }
+
+      const db = supabaseServer;
+      if (!db) {
+        return res.status(500).json({ success: false, message: "Database server unavailable" });
+      }
+
+      const { data: updatedPermission, error } = await (db.from("permissions") as any)
+        .update({
+          status,
+          action_by: actionBy || null,
+          action_date: new Date().toISOString(),
+          reason_for_action: reason || null,
+        })
+        .eq("id", parseInt(id))
+        .select();
+
+      if (error) {
+        console.error("Error updating permission in Supabase:", error);
+        return res.status(500).json({ success: false, message: error.message });
+      }
+
+      const row = Array.isArray(updatedPermission) && updatedPermission[0] ? updatedPermission[0] : null;
+      const emp = employeeName || row?.employee_name || row?.name || row?.username || row?.user_id;
+      const pType = permissionType || row?.permission_type || 'Permission';
+
+      // Dispatch Cliq status notification (Approved or Rejected)
+      if (status === "Approved" || status === "Rejected") {
+        cliqService.sendPermissionStatusUpdate({
+          id,
+          employeeName: emp,
+          permissionType: pType,
+          date: date || row?.permission_date || '',
+          startTime: startTime || row?.from_time,
+          endTime: endTime || row?.to_time,
+          status,
+          actionBy: actionBy || "Manager",
+          reason,
+        }).catch((err) => console.error("[ZOHO-CLIQ] Permission status update alert failed:", err));
+      }
+
+      res.json({ success: true, data: updatedPermission });
+    } catch (err: any) {
+      console.error("Error in /api/update-permission-status:", err);
+      res.status(500).json({ success: false, message: err?.message || "Internal server error" });
+    }
+  });
+
+  // Zoho Cliq OAuth Routes & Management Endpoints
+  app.get("/api/cliq/auth", (_req, res) => {
+    const authUrl = cliqService.getAuthUrl();
+    res.redirect(authUrl);
+  });
+
+  app.get("/api/cliq/callback", async (req, res) => {
+    const code = req.query.code as string;
+    if (!code) {
+      return res.status(400).send("<h3>Missing authorization code from Zoho.</h3>");
+    }
+
+    const success = await cliqService.exchangeCodeForToken(code);
+    if (success) {
+      res.send(`
+        <div style="font-family: sans-serif; max-width: 500px; margin: 40px auto; padding: 20px; border: 1px solid #10b981; border-radius: 8px; background: #ecfdf5;">
+          <h2 style="color: #065f46; margin-top: 0;">✅ Zoho Cliq Connected Successfully!</h2>
+          <p style="color: #047857;">Your refresh token and access token have been safely saved. LMS can now send automated leave alerts and scheduled daily reports to the Team Information channel.</p>
+          <a href="/employee/dashboard" style="display: inline-block; padding: 10px 18px; background: #059669; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">Return to LMS</a>
+        </div>
+      `);
+    } else {
+      res.status(500).send(`
+        <div style="font-family: sans-serif; max-width: 500px; margin: 40px auto; padding: 20px; border: 1px solid #ef4444; border-radius: 8px; background: #fef2f2;">
+          <h2 style="color: #991b1b; margin-top: 0;">❌ Zoho Cliq Connection Failed</h2>
+          <p style="color: #b91c1c;">Could not exchange the authorization code for tokens. Please verify client ID and secret.</p>
+        </div>
+      `);
+    }
+  });
+
+  app.get("/api/cliq/status", (_req, res) => {
+    const status = cliqService.isConfigured();
+    res.json({
+      success: true,
+      ...status,
+      channel: process.env.CLIQ_CHANNEL_NAME || "teaminformation",
+    });
+  });
+
+  const handleDisconnect = (_req: any, res: any) => {
+    cliqService.clearTokens();
+    res.json({ success: true, message: "Zoho Cliq disconnected successfully" });
+  };
+  app.post("/api/cliq/disconnect", handleDisconnect);
+  app.get("/api/cliq/disconnect", handleDisconnect);
+
+  app.post("/api/cliq/send-daily-report", async (req, res) => {
+    try {
+      const { date, force } = req.body || {};
+      const result = await generateDailyAttendanceReport(date, force !== false);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to trigger report" });
+    }
+  });
+
+  app.post("/api/cliq/test-leave-notification", async (req, res) => {
+    try {
+      const { employeeName, leaveType, startDate, endDate, status, reason } = req.body || {};
+      const success = await cliqService.sendLeaveNotification({
+        id: `test_${Date.now()}`,
+        employeeName: employeeName || "Test Employee",
+        leaveType: leaveType || "Casual Leave",
+        startDate: startDate || new Date().toISOString().split("T")[0],
+        endDate: endDate || new Date().toISOString().split("T")[0],
+        status: status || "Pending",
+        reason: reason || "Testing Zoho Cliq integration from LMS",
+      });
+      res.json({ success, message: success ? "Test message dispatched to Cliq" : "Failed to send message to Cliq" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Error" });
+    }
+  });
+
+  // Settings endpoints (Leave rules & Shift timings)
+  app.get("/api/settings/leave", async (_req, res) => {
+    try {
+      const settings = await getLeaveSettings();
+      res.json({ success: true, settings });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to get leave settings" });
+    }
+  });
+
+  app.post("/api/settings/leave", async (req, res) => {
+    try {
+      const updated = req.body;
+      await saveLeaveSettings(updated);
+      res.json({ success: true, message: "Leave settings saved successfully", settings: await getLeaveSettings() });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to save leave settings" });
+    }
+  });
+
+  app.get("/api/settings/shifts", async (_req, res) => {
+    try {
+      const settings = await getShiftSettings();
+      res.json({ success: true, settings });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to get shift settings" });
+    }
+  });
+
+  app.post("/api/settings/shifts", async (req, res) => {
+    try {
+      const updated = req.body;
+      await saveShiftSettings(updated);
+      res.json({ success: true, message: "Shift settings saved successfully", settings: await getShiftSettings() });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to save shift settings" });
+    }
+  });
+
+  // Holiday settings endpoints
+  app.get("/api/settings/holidays", async (_req, res) => {
+    try {
+      const settings = await getHolidaySettings();
+      res.json({ success: true, settings });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to get holiday settings" });
+    }
+  });
+
+  app.post("/api/settings/holidays", async (req, res) => {
+    try {
+      const updated = req.body;
+      await saveHolidaySettings(updated);
+      res.json({ success: true, message: "Holiday settings saved successfully", settings: await getHolidaySettings() });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to save holiday settings" });
+    }
+  });
+
   return httpServer;
 }
+

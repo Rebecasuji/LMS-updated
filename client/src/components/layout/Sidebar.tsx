@@ -14,6 +14,7 @@ import {
   Building2,
   Lock,
   CalendarClock,
+  CalendarDays,
   SlidersHorizontal,
   Menu
 } from 'lucide-react';
@@ -46,6 +47,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     { icon: CalendarClock, label: 'Approve Comp Off', path: '/admin/approve-comp-off' },
     { icon: Lock, label: 'View Permissions', path: '/admin/view-permissions' },
     { icon: SlidersHorizontal, label: 'Manage Balances', path: '/admin/manage-balances' },
+    { icon: CalendarDays, label: 'Leave Settings', path: '/admin/leave-settings' },
     { icon: Building2, label: 'Departments', path: '/admin/departments' },
     { icon: Users, label: 'Employees', path: '/admin/employees' },
     { icon: BarChart3, label: 'Analytics', path: '/admin/charts' },
@@ -60,6 +62,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     { icon: CalendarClock, label: 'Approve Comp Off', path: '/admin/approve-comp-off' },
     { icon: Lock, label: 'View Permissions', path: '/admin/view-permissions' },
     { icon: SlidersHorizontal, label: 'Manage Balances', path: '/admin/manage-balances' },
+    { icon: CalendarDays, label: 'Leave Settings', path: '/admin/leave-settings' },
     { icon: FileText, label: 'Apply Leave', path: '/employee/apply-leave' },
     { icon: CalendarClock, label: 'Apply Comp Off', path: '/employee/apply-comp-off' },
     { icon: History, label: 'Leave History', path: '/employee/history' },

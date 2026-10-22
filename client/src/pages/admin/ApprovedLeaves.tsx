@@ -6,7 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
 import { Input } from '@/components/ui/input';
-import { Search, Download, Calendar, Clock, FileText, User as UserIcon, Eye, CheckCircle2, Filter, RotateCcw } from 'lucide-react';
+import { Search, Download, Calendar, CalendarDays, Clock, FileText, User as UserIcon, Eye, CheckCircle2, Filter, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -64,6 +64,7 @@ export default function ApprovedLeaves() {
   const [searchTerm, setSearchTerm] = useState('');
   const [otSearchTerm, setOtSearchTerm] = useState('');
   const [selectedDate, setSelectedDate] = useState('');
+  const [selectedYear, setSelectedYear] = useState<string>(String(new Date().getFullYear()));
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [draftFilters, setDraftFilters] = useState<ApprovedLeaveFilters>(emptyApprovedLeaveFilters);
   const [appliedFilters, setAppliedFilters] = useState<ApprovedLeaveFilters>(emptyApprovedLeaveFilters);
@@ -155,7 +156,33 @@ export default function ApprovedLeaves() {
     }
   };
 
-  const filteredLeaves = leaves.filter(l => {
+  // Build year options: always include current year and previous 3 years, plus any years in leaves data
+  const currentYearNum = new Date().getFullYear();
+  const baseYears = [
+    String(currentYearNum),
+    String(currentYearNum - 1),
+    String(currentYearNum - 2),
+    String(currentYearNum - 3),
+  ];
+  const allYearsSet = new Set<string>(baseYears);
+  leaves.forEach((l) => {
+    const y1 = (l.startDate || '').slice(0, 4);
+    const y2 = (l.appliedDate || '').slice(0, 4);
+    if (y1 && /^\d{4}$/.test(y1)) allYearsSet.add(y1);
+    if (y2 && /^\d{4}$/.test(y2)) allYearsSet.add(y2);
+  });
+  const leaveYears = Array.from(allYearsSet).sort().reverse();
+
+  // Filter by year first
+  const yearFilteredLeaves = selectedYear === 'all'
+    ? leaves
+    : leaves.filter((leave) => {
+        const startYear = (leave.startDate || '').slice(0, 4);
+        const appliedYear = (leave.appliedDate || '').slice(0, 4);
+        return startYear === selectedYear || appliedYear === selectedYear;
+      });
+
+  const filteredLeaves = yearFilteredLeaves.filter(l => {
     const matchesSearch = searchTerm === '' ||
       String(l.employeeName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       String(l.employeeCode || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -280,6 +307,20 @@ export default function ApprovedLeaves() {
                   onChange={(e) => setSelectedDate(e.target.value)}
                   className="pl-10 bg-white border-slate-200"
                 />
+              </div>
+              <div className="flex items-center gap-2">
+                <CalendarDays className="w-4 h-4 text-slate-500 shrink-0" />
+                <Select value={selectedYear} onValueChange={setSelectedYear}>
+                  <SelectTrigger className="h-10 text-xs bg-white border-slate-200 w-32 font-semibold">
+                    <SelectValue placeholder="Select Year" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all" className="text-xs">All Years</SelectItem>
+                    {leaveYears.map((y) => (
+                      <SelectItem key={y} value={y} className="text-xs">{y}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               </div>
               <div className="flex w-full items-center justify-end gap-2 md:w-auto">
@@ -424,8 +465,18 @@ export default function ApprovedLeaves() {
                       </TableRow>
                     ) : filteredLeaves.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center py-8 text-slate-500 italic">
-                          No approved leaves found matching your filters.
+                        <TableCell colSpan={7} className="text-center py-12 text-slate-500">
+                          <div className="flex flex-col items-center justify-center space-y-2">
+                            <CalendarDays className="w-10 h-10 text-slate-300 stroke-[1.5]" />
+                            <p className="font-semibold text-slate-700 text-sm">
+                              {selectedYear !== 'all' ? `No approved leaves found for ${selectedYear}` : 'No approved leaves found'}
+                            </p>
+                            <p className="text-xs text-slate-400 max-w-sm">
+                              {selectedYear !== 'all'
+                                ? `No approved leave records exist for the year ${selectedYear}.`
+                                : 'No records match your selected filter criteria.'}
+                            </p>
+                          </div>
                         </TableCell>
                       </TableRow>
                     ) : (

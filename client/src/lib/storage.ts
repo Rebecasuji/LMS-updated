@@ -222,6 +222,15 @@ export async function updateLeaveStatus(
       // don't throw here — leave update succeeded; return both pieces
     }
 
+    // Notify Zoho Cliq in background
+    try {
+      fetch('/api/update-leave-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, status, actionBy, reason })
+      }).catch(() => {});
+    } catch (e) {}
+
     return { updatedLeave, approvalData };
   } catch (err) {
     console.error('Error in updateLeaveStatus:', err);
@@ -326,20 +335,38 @@ export async function getStoredPermissions(): Promise<PermissionRequest[]> {
       emergency: 'Emergency Permission',
     };
 
-    return (data || []).map((row: any) => {
+    const mapped = (data || []).map((row: any) => {
       const startTime = row.from_time || '';
       const endTime = row.to_time || '';
       const durationMinutes = calculateDurationMinutes(startTime, endTime);
 
+      const rawCode = (row.employee_code || '').trim();
+      const rawUsername = (row.username || '').trim();
+      const rawUserId = (row.user_id || '').trim();
+
+      // Determine cleanest employee code (e.g. E0048)
+      const empCode = rawCode || 
+        (/^E\d+/i.test(rawUsername) ? rawUsername : '') || 
+        (/^E\d+/i.test(rawUserId) ? rawUserId : '') || 
+        rawCode || rawUsername || rawUserId;
+
+      // Determine employee name if already text and not an ID
+      let empName = (row.employee_name || row.name || '').trim();
+      if (!empName || /^E\d+/i.test(empName)) {
+        if (rawUsername && !/^E\d+/i.test(rawUsername)) {
+          empName = rawUsername;
+        }
+      }
+
       return {
         id: String(row.id),
-        employeeId: String(row.user_id || ''),
-        employeeName: row.username || row.employee_name || row.name || '',
-        employeeCode: row.employee_code || row.user_id || '',
+        employeeId: rawUserId || empCode,
+        employeeName: empName,
+        employeeCode: empCode,
         type: DB_TO_DISPLAY[row.permission_type] || row.permission_type,
         startTime,
         endTime,
-        date: row.permission_date || row.created_at ? format(new Date(row.permission_date || row.created_at), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
+        date: row.permission_date || (row.created_at ? format(new Date(row.created_at), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd')),
         reason: row.reason || '',
         additionalInfo: row.additional_info || undefined,
         status: row.status || 'Pending',
@@ -351,6 +378,59 @@ export async function getStoredPermissions(): Promise<PermissionRequest[]> {
         durationMinutes,
       };
     });
+
+    // Resolve missing or ID-like employee names from employees and users tables
+    const needsResolution = mapped.some(
+      (r) => !r.employeeName || /^E\d+/i.test(r.employeeName) || r.employeeName === r.employeeCode
+    );
+
+    if (needsResolution) {
+      try {
+        const userMap: Record<string, string> = {};
+
+        // 1. Fetch from employees table
+        try {
+          const { data: empData } = await supabase.from('employees').select('employee_code, name');
+          (empData || []).forEach((e: any) => {
+            const code = (e.employee_code || '').trim().toUpperCase();
+            if (code && e.name) userMap[code] = e.name.trim();
+          });
+        } catch (_) {}
+
+        // 2. Fetch from users table
+        try {
+          const { data: userData } = await supabase.from('users').select('user_id, username, name');
+          (userData || []).forEach((u: any) => {
+            const uid = (u.user_id || '').trim().toUpperCase();
+            const uname = (u.username || '').trim().toUpperCase();
+            if (uid && u.name && !userMap[uid]) userMap[uid] = u.name.trim();
+            if (uname && u.name && !userMap[uname]) userMap[uname] = u.name.trim();
+          });
+        } catch (_) {}
+
+        // 3. Fallback from INITIAL_USERS
+        INITIAL_USERS.forEach((u) => {
+          const code = (u.code || '').trim().toUpperCase();
+          const uid = (u.id || '').trim().toUpperCase();
+          if (code && !userMap[code]) userMap[code] = u.name;
+          if (uid && !userMap[uid]) userMap[uid] = u.name;
+        });
+
+        return mapped.map((r) => {
+          const codeKey = (r.employeeCode || '').trim().toUpperCase();
+          const idKey = (r.employeeId || '').trim().toUpperCase();
+          const resolved = userMap[codeKey] || userMap[idKey];
+          return {
+            ...r,
+            employeeName: resolved || r.employeeName || r.employeeCode,
+          };
+        });
+      } catch (e) {
+        console.error('Error enriching permission names:', e);
+      }
+    }
+
+    return mapped;
   } catch (err) {
     console.error('Error fetching permissions:', err);
     return [];
@@ -370,7 +450,7 @@ export async function addPermissionRequest(permission: PermissionRequest) {
 
     const safePerm: any = {
       user_id: permission.employeeId,
-      ...(permission.employeeCode ? { username: permission.employeeCode } : {}),
+      username: permission.employeeCode || permission.employeeId,
       permission_type: dbType,
       from_time: permission.startTime,
       to_time: permission.endTime,
@@ -382,15 +462,16 @@ export async function addPermissionRequest(permission: PermissionRequest) {
 
     const fullPerm: any = {
       ...safePerm,
-      ...(permission.employeeName ? { employee_name: permission.employeeName, name: permission.employeeName } : {}),
+      employee_code: permission.employeeCode || permission.employeeId,
+      employee_name: permission.employeeName,
+      name: permission.employeeName,
     };
 
-    let respPerm = await supabase.from('permissions').insert(safePerm).select();
+    // Try inserting full permission first so name and code are persisted
+    let respPerm = await supabase.from('permissions').insert(fullPerm).select();
     if (respPerm.error) {
-      const errMsg = String(respPerm.error.message || '');
-      if (!/column .* does not exist/i.test(errMsg) && !/Could not find the .* column/i.test(errMsg)) {
-        respPerm = await supabase.from('permissions').insert(fullPerm).select();
-      }
+      console.warn('Full permission insert warning (falling back to standard columns):', respPerm.error.message);
+      respPerm = await supabase.from('permissions').insert(safePerm).select();
     }
 
     if (respPerm.error) {
@@ -439,8 +520,27 @@ export async function updatePermissionStatus(
 
     if (approvalErr) {
       console.error('Error inserting approval for permission in Supabase:', approvalErr);
-      // don't throw here — the permission was updated
     }
+
+    // 3) Notify Zoho Cliq channel in background via backend endpoint
+    try {
+      const row = Array.isArray(updatedPermission) && updatedPermission[0] ? updatedPermission[0] : null;
+      fetch('/api/update-permission-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id,
+          status,
+          actionBy,
+          reason,
+          employeeName: row?.employee_name || row?.name || row?.username,
+          permissionType: row?.permission_type,
+          date: row?.permission_date,
+          startTime: row?.from_time,
+          endTime: row?.to_time,
+        }),
+      }).catch((e) => console.log('Zoho Cliq permission status sync:', e));
+    } catch (_) {}
 
     return { updatedPermission, approvalData };
   } catch (err) {
