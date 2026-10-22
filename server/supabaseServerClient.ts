@@ -23,7 +23,8 @@ export async function getNotificationEmailsServer(): Promise<{ adminEmails: stri
     const { data, error } = await supabaseServer
       .from('users')
       .select('*')
-      .in('role', ['admin', 'hr']);
+      .in('role', ['admin', 'hr'])
+      .neq('is_active', false);
 
     if (error) {
       console.error('Error fetching notification users from Supabase (server):', error);

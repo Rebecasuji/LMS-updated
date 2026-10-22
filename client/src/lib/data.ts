@@ -12,6 +12,7 @@ export interface User {
   email?: string;
   reportingManager?: string;
   hrName?: string;
+  isActive?: boolean;
 }
 
 export interface LeaveRequest {

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { format } from 'date-fns';
+import { getInactiveUserKeys, isInactiveKey } from './activeUsers';
 import { User, LeaveRequest, Role, INITIAL_LEAVES, INITIAL_USERS } from './data';
 export type { User, LeaveRequest, Role };
 
@@ -11,27 +12,46 @@ export function getStoredUsers(): User[] {
   return INITIAL_USERS;
 }
 
-export async function getAllUsersAsync(): Promise<User[]> {
+export async function getAllUsersAsync(includeInactive = false): Promise<User[]> {
   try {
-    const { data, error } = await supabase.from('users').select('*');
+    let query = supabase.from('users').select('*');
+    // Inactive employees are hidden everywhere except the admin Employees page.
+    if (!includeInactive) query = query.neq('is_active', false);
+    const { data, error } = await query;
     if (error) throw error;
-    
+
     return (data || []).map((u: any) => {
-       const dbRole = (u.role || 'employee').toString().toLowerCase();
-       const mappedRole: Role = dbRole === 'admin' ? 'Admin' : dbRole === 'hr' ? 'HR' : 'Employee';
-       return {
-         id: String(u.user_id || u.username || ''),
-         code: u.username || u.user_id || '',
-         name: u.name || u.username || '',
-         role: mappedRole,
-         designation: u.designation || '',
-         email: u.email || undefined,
-       };
+      const dbRole = (u.role || 'employee').toString().toLowerCase();
+      const mappedRole: Role = dbRole === 'admin' ? 'Admin' : dbRole === 'hr' ? 'HR' : 'Employee';
+      return {
+        id: String(u.user_id || u.username || ''),
+        code: u.username || u.user_id || '',
+        name: u.name || u.username || '',
+        role: mappedRole,
+        designation: u.designation || '',
+        email: u.email || undefined,
+        isActive: u.is_active !== false,
+      };
     });
   } catch (err) {
     console.error('Error fetching all users async:', err);
     return INITIAL_USERS;
   }
+}
+
+// Activate / deactivate an employee. Keeps public.employees in sync (best effort).
+export async function setUserActive(userId: string, username: string, active: boolean): Promise<boolean> {
+  const { error } = await supabase.from('users').update({ is_active: active }).eq('user_id', userId);
+  if (error) {
+    console.error('Error updating is_active on users', error);
+    return false;
+  }
+  const { error: empErr } = await supabase
+    .from('employees')
+    .update({ is_active: active })
+    .eq('employee_code', username);
+  if (empErr) console.warn('Could not sync employees.is_active', empErr);
+  return true;
 }
 
 export function updateUser(id: string, updatedData: Partial<User>) {
@@ -62,8 +82,12 @@ export async function getStoredLeaves(): Promise<LeaveRequest[]> {
       throw error;
     }
 
+    // Hide leaves of inactive employees
+    const inactiveKeys = await getInactiveUserKeys();
+    const activeRows = (data || []).filter((row: any) => !isInactiveKey(inactiveKeys, row.user_id, row.username, row.employee_code));
+
     // Map Supabase leaves to LeaveRequest format
-    const mapped = (data || []).map((row: any) => ({
+    const mapped = activeRows.map((row: any) => ({
       id: String(row.id),
       employeeId: String(row.user_id || ''),
       // prefer `username` column if present, then `employee_name`, then `name`
@@ -228,8 +252,8 @@ export async function updateLeaveStatus(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, status, actionBy, reason })
-      }).catch(() => {});
-    } catch (e) {}
+      }).catch(() => { });
+    } catch (e) { }
 
     return { updatedLeave, approvalData };
   } catch (err) {
@@ -335,7 +359,11 @@ export async function getStoredPermissions(): Promise<PermissionRequest[]> {
       emergency: 'Emergency Permission',
     };
 
-    const mapped = (data || []).map((row: any) => {
+    // Hide permissions of inactive employees
+    const inactiveKeys = await getInactiveUserKeys();
+    const activeRows = (data || []).filter((row: any) => !isInactiveKey(inactiveKeys, row.user_id, row.username, row.employee_code));
+
+    const mapped = activeRows.map((row: any) => {
       const startTime = row.from_time || '';
       const endTime = row.to_time || '';
       const durationMinutes = calculateDurationMinutes(startTime, endTime);
@@ -345,9 +373,9 @@ export async function getStoredPermissions(): Promise<PermissionRequest[]> {
       const rawUserId = (row.user_id || '').trim();
 
       // Determine cleanest employee code (e.g. E0048)
-      const empCode = rawCode || 
-        (/^E\d+/i.test(rawUsername) ? rawUsername : '') || 
-        (/^E\d+/i.test(rawUserId) ? rawUserId : '') || 
+      const empCode = rawCode ||
+        (/^E\d+/i.test(rawUsername) ? rawUsername : '') ||
+        (/^E\d+/i.test(rawUserId) ? rawUserId : '') ||
         rawCode || rawUsername || rawUserId;
 
       // Determine employee name if already text and not an ID
@@ -395,7 +423,7 @@ export async function getStoredPermissions(): Promise<PermissionRequest[]> {
             const code = (e.employee_code || '').trim().toUpperCase();
             if (code && e.name) userMap[code] = e.name.trim();
           });
-        } catch (_) {}
+        } catch (_) { }
 
         // 2. Fetch from users table
         try {
@@ -406,7 +434,7 @@ export async function getStoredPermissions(): Promise<PermissionRequest[]> {
             if (uid && u.name && !userMap[uid]) userMap[uid] = u.name.trim();
             if (uname && u.name && !userMap[uname]) userMap[uname] = u.name.trim();
           });
-        } catch (_) {}
+        } catch (_) { }
 
         // 3. Fallback from INITIAL_USERS
         INITIAL_USERS.forEach((u) => {
@@ -540,7 +568,7 @@ export async function updatePermissionStatus(
           endTime: row?.to_time,
         }),
       }).catch((e) => console.log('Zoho Cliq permission status sync:', e));
-    } catch (_) {}
+    } catch (_) { }
 
     return { updatedPermission, approvalData };
   } catch (err) {
@@ -596,13 +624,13 @@ export async function getManualBalances(): Promise<Record<string, ManualEntry>> 
   try {
     const raw = localStorage.getItem(MANUAL_BALANCES_KEY);
     if (raw) return JSON.parse(raw);
-  } catch (e) {}
+  } catch (e) { }
 
   return {};
 }
 
 export async function saveManualBalance(
-  employeeCode: string, 
+  employeeCode: string,
   balances: { casualTaken: number; sickTaken: number; privilegeTaken: number },
   userObj?: { id?: string; code?: string }
 ) {
@@ -689,10 +717,10 @@ export async function getLeaveBalance(employeeCode: string, employeeId?: string)
     // Using date-only comparison (YYYY-MM-DD) with >= avoids midnight vs. full-timestamp mismatch.
     const filteredLeaves = (manualEntry && manualEntry.updatedAt)
       ? employeeLeaves.filter(l => {
-          const appliedDate = (l.appliedDate || l.startDate || '').split('T')[0];
-          const setupDate = (manualEntry.updatedAt || '').split('T')[0];
-          return appliedDate >= setupDate;
-        })
+        const appliedDate = (l.appliedDate || l.startDate || '').split('T')[0];
+        const setupDate = (manualEntry.updatedAt || '').split('T')[0];
+        return appliedDate >= setupDate;
+      })
       : employeeLeaves;
 
     const approvedCasual = filteredLeaves
@@ -792,7 +820,8 @@ export async function getNotificationEmails() {
     const { data, error } = await supabase
       .from('users')
       .select('username,email,role')
-      .in('role', ['admin', 'hr']);
+      .in('role', ['admin', 'hr'])
+      .neq('is_active', false);
 
     if (error) {
       console.error('Error fetching notification users from Supabase', error);

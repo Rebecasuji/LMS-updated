@@ -22,7 +22,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const savedUser = localStorage.getItem('leave_manager_user');
     if (savedUser) {
       try {
-        setUser(JSON.parse(savedUser));
+        const parsed = JSON.parse(savedUser);
+        setUser(parsed);
+        // If the employee was deactivated after logging in, end the session.
+        const ident = parsed?.id || parsed?.code;
+        if (ident) {
+          supabase
+            .from('users')
+            .select('is_active')
+            .eq('user_id', ident)
+            .maybeSingle()
+            .then(({ data }) => {
+              if (data && (data as any).is_active === false) {
+                setUser(null);
+                localStorage.removeItem('leave_manager_user');
+              }
+            });
+        }
       } catch (err) {
         console.error('Failed to parse saved user', err);
         localStorage.removeItem('leave_manager_user');
@@ -55,6 +71,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       // 3. If user not found → fail
       if (!data) {
+        return false;
+      }
+
+      // 3b. Inactive employees cannot log in
+      if (data.is_active === false) {
         return false;
       }
 

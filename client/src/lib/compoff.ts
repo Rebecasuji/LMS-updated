@@ -1,6 +1,7 @@
 import { supabase } from './supabaseClient';
 import { format, addDays, parseISO, differenceInCalendarDays } from 'date-fns';
 import { notifyUser, notifyAdminAndHR } from './notifications';
+import { getInactiveUserKeys, isInactiveKey } from './activeUsers';
 
 export type ApprovalStatus = 'Pending' | 'Approved' | 'Rejected';
 export type CompOffFinalStatus = 'Pending' | 'Partially Approved / Pending Final Approval' | 'Approved' | 'Rejected';
@@ -159,7 +160,10 @@ export async function getAllCompOffRequests(): Promise<CompOffRequest[]> {
       .select('*')
       .order('created_at', { ascending: false });
     if (error) throw error;
-    return (data || []).map(mapRow);
+    const inactiveKeys = await getInactiveUserKeys();
+    return (data || [])
+      .filter((r: any) => !isInactiveKey(inactiveKeys, r.employee_id, r.user_id, r.employee_code))
+      .map(mapRow);
   } catch (err) {
     console.error('Error fetching comp off requests:', err);
     return [];

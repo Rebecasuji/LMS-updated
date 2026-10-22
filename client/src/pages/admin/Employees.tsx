@@ -1,11 +1,12 @@
-import { getStoredUsers, updateUser, deleteUser } from '@/lib/storage';
+import { getAllUsersAsync, setUserActive } from '@/lib/storage';
+import { useAuth } from '@/context/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Search, Edit2, Trash2 } from 'lucide-react';
+import { Search, Edit2, Trash2, UserX, UserCheck } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useToast } from '@/hooks/use-toast';
 import {
   Dialog,
@@ -17,17 +18,25 @@ import {
 import { Label } from '@/components/ui/label';
 
 export default function Employees() {
-  const [users, setUsers] = useState(getStoredUsers());
+  const { user: currentUser } = useAuth();
+  const [users, setUsers] = useState<any[]>([]);
+  const [showInactive, setShowInactive] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [editingUser, setEditingUser] = useState<any>(null);
   const [editName, setEditName] = useState('');
   const [editDesignation, setEditDesignation] = useState('');
   const { toast } = useToast();
 
+  // Load from the database, including inactive employees (only visible on this page)
+  useEffect(() => {
+    getAllUsersAsync(true).then(setUsers);
+  }, []);
+
   const filteredUsers = users.filter(u =>
-    u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.designation.toLowerCase().includes(searchTerm.toLowerCase())
+    (showInactive || u.isActive !== false) &&
+    (u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      u.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (u.designation || '').toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
   const handleEdit = (user: any) => {
@@ -38,8 +47,7 @@ export default function Employees() {
 
   const handleSaveEdit = () => {
     if (!editingUser) return;
-    const updated = updateUser(editingUser.id, { name: editName, designation: editDesignation });
-    setUsers(updated);
+    setUsers(prev => prev.map(u => u.id === editingUser.id ? { ...u, name: editName, designation: editDesignation } : u));
     setEditingUser(null);
     toast({
       title: "Success",
@@ -50,14 +58,35 @@ export default function Employees() {
 
   const handleDelete = (id: string, name: string) => {
     if (window.confirm(`Are you sure you want to delete ${name}?`)) {
-      const updated = deleteUser(id);
-      setUsers(updated);
+      setUsers(prev => prev.filter(u => u.id !== id));
       toast({
         title: "Success",
         description: "Employee deleted successfully",
         className: "bg-green-500/10 border-green-500/20 text-white"
       });
     }
+  };
+
+  const handleToggleActive = async (user: any) => {
+    const makeActive = user.isActive === false;
+    if (!makeActive) {
+      if (currentUser && (currentUser.id === user.id || currentUser.code === user.code)) {
+        toast({ title: "Not allowed", description: "You cannot deactivate your own account.", variant: "destructive" });
+        return;
+      }
+      if (!window.confirm(`Mark ${user.name} as inactive? They will be hidden everywhere and cannot log in.`)) return;
+    }
+    const ok = await setUserActive(user.id, user.code, makeActive);
+    if (!ok) {
+      toast({ title: "Error", description: "Could not update status. Has the is_active column been added?", variant: "destructive" });
+      return;
+    }
+    setUsers(prev => prev.map(u => u.id === user.id ? { ...u, isActive: makeActive } : u));
+    toast({
+      title: "Success",
+      description: `${user.name} is now ${makeActive ? 'active' : 'inactive'}`,
+      className: "bg-green-500/10 border-green-500/20 text-white"
+    });
   };
 
   return (
@@ -67,14 +96,20 @@ export default function Employees() {
           <h2 className="text-3xl font-display font-bold text-slate-900 mb-2">Employees Directory</h2>
           <p className="text-slate-600">Manage employee details and roles</p>
         </div>
-        <div className="relative w-full md:w-96">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <Input
-            placeholder="Search employees..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10 bg-white border-slate-200 text-slate-900 focus:border-primary/50"
-          />
+        <div className="flex flex-col gap-2 w-full md:w-96">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Input
+              placeholder="Search employees..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10 bg-white border-slate-200 text-slate-900 focus:border-primary/50"
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} data-testid="checkbox-show-inactive" />
+            Show inactive employees
+          </label>
         </div>
       </div>
 
@@ -93,7 +128,7 @@ export default function Employees() {
             </TableHeader>
             <TableBody>
               {filteredUsers.map((user) => (
-                <TableRow key={user.id} className="hover:bg-slate-50/50 border-slate-100 transition-colors" data-testid={`row-employee-${user.id}`}>
+                <TableRow key={user.id} className={`hover:bg-slate-50/50 border-slate-100 transition-colors ${user.isActive === false ? "opacity-60" : ""}`} data-testid={`row-employee-${user.id}`}>
                   <TableCell className="font-mono text-primary font-medium">{user.code}</TableCell>
                   <TableCell className="font-bold text-slate-900">{user.name}</TableCell>
                   <TableCell className="text-slate-600">{user.designation}</TableCell>
@@ -103,8 +138,8 @@ export default function Employees() {
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-2"></span>
-                    <span className="text-xs text-slate-500 font-medium">Active</span>
+                    <span className={`inline-block w-2 h-2 rounded-full mr-2 ${user.isActive === false ? 'bg-slate-400' : 'bg-green-500'}`}></span>
+                    <span className="text-xs text-slate-500 font-medium">{user.isActive === false ? 'Inactive' : 'Active'}</span>
                   </TableCell>
                   <TableCell className="flex gap-2">
                     <Button
@@ -115,6 +150,16 @@ export default function Employees() {
                       data-testid={`button-edit-${user.id}`}
                     >
                       <Edit2 className="w-3 h-3" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className={user.isActive === false ? "bg-green-50 hover:bg-green-100 text-green-600 border-green-100" : "bg-amber-50 hover:bg-amber-100 text-amber-600 border-amber-100"}
+                      onClick={() => handleToggleActive(user)}
+                      title={user.isActive === false ? "Activate" : "Deactivate"}
+                      data-testid={`button-toggle-active-${user.id}`}
+                    >
+                      {user.isActive === false ? <UserCheck className="w-3 h-3" /> : <UserX className="w-3 h-3" />}
                     </Button>
                     <Button
                       size="sm"

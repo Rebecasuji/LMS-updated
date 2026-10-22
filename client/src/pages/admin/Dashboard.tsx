@@ -1,4 +1,4 @@
-import { getStoredLeaves, getStoredUsers, getStoredPermissions, PermissionRequest } from '@/lib/storage';
+import { getStoredLeaves, getAllUsersAsync, getStoredPermissions, PermissionRequest } from '@/lib/storage';
 import { LeaveRequest, User } from '@/lib/data';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Search, Clock, FileText, MessageSquare, CheckCircle, RefreshCw, Send, Power } from 'lucide-react';
@@ -34,8 +34,7 @@ export default function AdminDashboard() {
     const load = async () => {
       setLoading(true);
       try {
-        const [l, p] = await Promise.all([getStoredLeaves(), getStoredPermissions()]);
-        const u = getStoredUsers();
+        const [l, p, u] = await Promise.all([getStoredLeaves(), getStoredPermissions(), getAllUsersAsync()]);
         if (!mounted) return;
         setLeaves(l);
         setPermissions(p);

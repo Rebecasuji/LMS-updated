@@ -157,7 +157,7 @@ export async function registerRoutes(
       // 2. Overlap validation
       let conflictingDates: string[] = [];
       let conflictingLeaveType: string | null = null;
-      
+
       const parseDateStr = (d: string) => {
         if (!d) return NaN;
         if (d.includes('T')) return new Date(d).getTime();
@@ -198,14 +198,14 @@ export async function registerRoutes(
 
           const overlapStart = new Date(Math.max(reqStart, existingStart));
           const overlapEnd = new Date(Math.min(reqEnd, existingEnd));
-          
+
           let current = new Date(overlapStart);
           while (current <= overlapEnd) {
             const d = current.getDate().toString().padStart(2, '0');
             const m = (current.getMonth() + 1).toString().padStart(2, '0');
             const y = current.getFullYear();
             const formattedDate = `${d}/${m}/${y}`;
-            
+
             if (!conflictingDates.includes(formattedDate)) {
               conflictingDates.push(formattedDate);
             }
@@ -218,9 +218,9 @@ export async function registerRoutes(
 
       if (conflictingDates.length > 0) {
         if (reqStart === reqEnd && conflictingDates.length === 1) {
-          return res.status(400).json({ 
-            success: false, 
-            message: `You have already applied ${conflictingLeaveType} for ${conflictingDates[0]}. You cannot apply another leave or Comp Off for the same date.` 
+          return res.status(400).json({
+            success: false,
+            message: `You have already applied ${conflictingLeaveType} for ${conflictingDates[0]}. You cannot apply another leave or Comp Off for the same date.`
           });
         } else {
           let dateMsg = conflictingDates.join(', ');
@@ -229,8 +229,8 @@ export async function registerRoutes(
           } else if (conflictingDates.length > 2) {
             dateMsg = conflictingDates.slice(0, -1).join(', ') + ' and ' + conflictingDates[conflictingDates.length - 1];
           }
-          return res.status(400).json({ 
-            success: false, 
+          return res.status(400).json({
+            success: false,
             message: `Cannot submit this request. Leave already exists on ${dateMsg}.`
           });
         }
@@ -319,6 +319,10 @@ export async function registerRoutes(
       console.log("USER FOUND:", safeUser);
       console.log("USER_ID USED FOR UPDATE:", safeUser.user_id);
 
+      if (safeUser.is_active === false) {
+        return res.status(403).json({ success: false, message: "This account is inactive" });
+      }
+
       const userEmail = safeUser.email;
 
       if (!userEmail) {
@@ -398,6 +402,10 @@ export async function registerRoutes(
 
       if (!safeUser) {
         return res.status(400).json({ success: false, message: "Invalid or expired reset token" });
+      }
+
+      if (safeUser.is_active === false) {
+        return res.status(403).json({ success: false, message: "This account is inactive" });
       }
 
       // 2️⃣ Check expiry
@@ -688,4 +696,3 @@ export async function registerRoutes(
 
   return httpServer;
 }
-
