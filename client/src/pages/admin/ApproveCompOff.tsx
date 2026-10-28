@@ -3,6 +3,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Search, Check, X } from 'lucide-react';
@@ -35,6 +36,10 @@ export default function ApproveCompOff() {
   const [requests, setRequests] = useState<CompOffRequest[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [rejectReason, setRejectReason] = useState('');
+  const [bulkRejectReason, setBulkRejectReason] = useState('');
+  const [bulkRejectOpen, setBulkRejectOpen] = useState(false);
+  const [selectedRequestIds, setSelectedRequestIds] = useState<string[]>([]);
+  const [bulkProcessing, setBulkProcessing] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const isHR = user?.role === 'HR';
@@ -58,6 +63,7 @@ export default function ApproveCompOff() {
       } else {
         await adminActionCompOff(req.id, status, actionBy, reason);
       }
+      setSelectedRequestIds((selected) => selected.filter((id) => id !== req.id));
       toast({
         title: `Comp Off ${status} (${targetRole})`,
         description: status === 'Approved'
@@ -78,6 +84,75 @@ export default function ApproveCompOff() {
     r.employeeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
     r.employeeCode.toLowerCase().includes(searchTerm.toLowerCase())
   );
+  const approvableSelectedCount = filtered.filter((request) =>
+    selectedRequestIds.includes(request.id) &&
+    (isHR ? request.hrStatus : request.adminStatus) === 'Pending'
+  ).length;
+
+  const toggleRequestSelection = (id: string, checked: boolean) => {
+    setSelectedRequestIds((selected) => checked
+      ? selected.includes(id) ? selected : selected.concat(id)
+      : selected.filter((selectedId) => selectedId !== id));
+  };
+
+  const toggleAllVisibleRequests = (checked: boolean) => {
+    const visibleIds = filtered
+      .filter((request) => request.finalStatus !== 'Rejected')
+      .map((request) => request.id);
+    setSelectedRequestIds((selected) => checked
+      ? selected.concat(visibleIds.filter((id) => !selected.includes(id)))
+      : selected.filter((id) => !visibleIds.includes(id)));
+  };
+
+  const handleBulkAction = async (status: 'Approved' | 'Rejected', reason?: string) => {
+    if (!user || bulkProcessing) return;
+
+    const selectedRequests = requests.filter((request) =>
+      selectedRequestIds.includes(request.id) &&
+      request.finalStatus !== 'Rejected' &&
+      (status === 'Rejected' || (isHR ? request.hrStatus : request.adminStatus) === 'Pending')
+    );
+    if (selectedRequests.length === 0) {
+      toast({
+        title: 'No eligible requests selected',
+        description: status === 'Approved'
+          ? `Selected requests already have your ${myRoleLabel} approval recorded.`
+          : 'Select pending Comp Off requests to continue.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setBulkProcessing(true);
+    const completedIds: string[] = [];
+    let failedCount = 0;
+    const actionBy = `${user.code} (${user.name})`;
+
+    for (const request of selectedRequests) {
+      try {
+        if (isHR) {
+          await hrActionCompOff(request.id, status, actionBy, reason);
+        } else {
+          await adminActionCompOff(request.id, status, actionBy, reason);
+        }
+        completedIds.push(request.id);
+      } catch (error) {
+        console.error(`Failed to ${status.toLowerCase()} Comp Off request ${request.id}:`, error);
+        failedCount += 1;
+      }
+    }
+
+    await load();
+    setSelectedRequestIds((selected) => selected.filter((id) => !completedIds.includes(id)));
+    setBulkProcessing(false);
+    setBulkRejectOpen(false);
+    setBulkRejectReason('');
+    toast({
+      title: failedCount === 0 ? `Comp Off ${status} (${myRoleLabel})` : 'Some Comp Off actions failed',
+      description: `${completedIds.length} request(s) ${status.toLowerCase()} by ${myRoleLabel}${failedCount > 0 ? `; ${failedCount} failed and remain pending` : ''}.`,
+      variant: failedCount > 0 ? 'destructive' : undefined,
+    });
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
@@ -101,6 +176,62 @@ export default function ApproveCompOff() {
         <p className="font-bold">⚠️ Dual approval required: Comp Off is credited only after BOTH Admin and HR approve.</p>
       </div>
 
+      {filtered.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3">
+          <Checkbox
+            checked={filtered.filter((request) => request.finalStatus !== 'Rejected').length > 0 &&
+              filtered.filter((request) => request.finalStatus !== 'Rejected')
+                .every((request) => selectedRequestIds.includes(request.id))}
+            onCheckedChange={(checked) => toggleAllVisibleRequests(checked === true)}
+            aria-label="Select all visible pending Comp Off requests"
+            disabled={bulkProcessing}
+          />
+          <span className="text-sm text-slate-600">{selectedRequestIds.length} selected</span>
+          <Button
+            onClick={() => void handleBulkAction('Approved')}
+            disabled={approvableSelectedCount === 0 || bulkProcessing}
+            className="bg-green-600 hover:bg-green-700 text-white"
+          >
+            <Check className="w-4 h-4 mr-2" /> Approve Selected as {myRoleLabel}
+          </Button>
+          <Dialog open={bulkRejectOpen} onOpenChange={setBulkRejectOpen}>
+            <DialogTrigger asChild>
+              <Button
+                variant="outline"
+                disabled={selectedRequestIds.length === 0 || bulkProcessing}
+                className="border-red-200 text-red-600 hover:bg-red-50"
+              >
+                <X className="w-4 h-4 mr-2" /> Reject Selected
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="bg-white border-slate-200">
+              <DialogHeader>
+                <DialogTitle className="text-slate-900">Reject Selected Comp Off Requests</DialogTitle>
+                <DialogDescription>Please provide a reason. It will be recorded for each selected request.</DialogDescription>
+              </DialogHeader>
+              <div className="py-4">
+                <Label className="text-slate-700 font-bold mb-2 block">Rejection Reason</Label>
+                <Textarea
+                  value={bulkRejectReason}
+                  onChange={(event) => setBulkRejectReason(event.target.value)}
+                  className="bg-white border-slate-200 text-slate-900 mt-2"
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setBulkRejectOpen(false)} disabled={bulkProcessing}>Cancel</Button>
+                <Button
+                  onClick={() => void handleBulkAction('Rejected', bulkRejectReason)}
+                  disabled={!bulkRejectReason.trim() || bulkProcessing}
+                  className="bg-red-600 hover:bg-red-700 text-white font-bold"
+                >
+                  Reject Selected
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4">
         {loading ? (
           <p className="text-slate-500 text-sm">Loading...</p>
@@ -115,6 +246,12 @@ export default function ApproveCompOff() {
                 <div className="flex flex-col md:flex-row justify-between gap-6">
                   <div className="space-y-2">
                     <div className="flex items-center gap-3 flex-wrap">
+                      <Checkbox
+                        checked={selectedRequestIds.includes(r.id)}
+                        onCheckedChange={(checked) => toggleRequestSelection(r.id, checked === true)}
+                        aria-label={`Select Comp Off request for ${r.employeeName}`}
+                        disabled={bulkProcessing || r.finalStatus === 'Rejected'}
+                      />
                       <h3 className="text-xl font-bold text-slate-900">{r.employeeName} ({r.employeeCode})</h3>
                       <Badge variant="secondary" className="bg-slate-50 border-slate-200 text-slate-700">{r.compOffDays} day(s)</Badge>
                     </div>

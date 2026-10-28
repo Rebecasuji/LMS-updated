@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -57,12 +58,22 @@ export default function ApplyCompOff() {
   const { toast } = useToast();
   const [balance, setBalance] = useState<CompOffBalance | null>(null);
   const [requests, setRequests] = useState<CompOffRequest[]>([]);
+  const [requestDateFilter, setRequestDateFilter] = useState('');
   const [loading, setLoading] = useState(true);
 
   const form = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: { earnedStartDate: '', earnedEndDate: '', reason: '' },
   });
+  const selectedEarnedDate = form.watch('earnedStartDate');
+  const selectedDateAlreadyApplied = !!selectedEarnedDate && requests.some((request) =>
+    request.earnedStartDate <= selectedEarnedDate &&
+    request.earnedEndDate >= selectedEarnedDate
+  );
+  const filteredRequests = requests.filter((request) =>
+    !requestDateFilter ||
+    (request.earnedStartDate <= requestDateFilter && request.earnedEndDate >= requestDateFilter)
+  );
 
   const load = async () => {
     if (!user) return;
@@ -76,6 +87,18 @@ export default function ApplyCompOff() {
 
   const onSubmit = async (data: FormData) => {
     if (!user) return;
+    const overlapsExistingRequest = requests.some((request) =>
+      request.earnedStartDate <= data.earnedEndDate &&
+      request.earnedEndDate >= data.earnedStartDate
+    );
+    if (overlapsExistingRequest) {
+      form.setError('earnedStartDate', {
+        type: 'manual',
+        message: 'A Comp Off application already exists for this date.',
+      });
+      return;
+    }
+
     try {
       await applyCompOff({
         employeeId: user.id,
@@ -144,6 +167,7 @@ export default function ApplyCompOff() {
                 {...form.register('earnedStartDate')}
                 onChange={(e) => {
                   const val = e.target.value;
+                  form.clearErrors('earnedStartDate');
                   form.setValue('earnedStartDate', val);
                   form.setValue('earnedEndDate', val);
                 }}
@@ -156,7 +180,16 @@ export default function ApplyCompOff() {
               <Textarea {...form.register('reason')} placeholder="e.g. Worked on Sunday for site inspection..." className="bg-white border-slate-200 text-slate-900 min-h-[90px]" />
               {form.formState.errors.reason && <p className="text-red-400 text-xs">{form.formState.errors.reason.message}</p>}
             </div>
-            <Button type="submit" className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold">
+            {selectedDateAlreadyApplied && (
+              <p className="text-red-600 text-sm" role="alert">
+                A Comp Off application already exists for this date. Please select another date.
+              </p>
+            )}
+            <Button
+              type="submit"
+              disabled={selectedDateAlreadyApplied}
+              className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               Apply Comp Off
             </Button>
           </form>
@@ -165,45 +198,68 @@ export default function ApplyCompOff() {
 
       {/* My requests */}
       <Card className="bg-white border-slate-200 shadow-sm">
-        <CardHeader>
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="text-slate-900">My Comp Off Requests</CardTitle>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="comp-off-request-date-filter" className="text-sm text-slate-600 whitespace-nowrap">Worked date</Label>
+            <Input
+              id="comp-off-request-date-filter"
+              type="date"
+              value={requestDateFilter}
+              onChange={(event) => setRequestDateFilter(event.target.value)}
+              className="w-auto bg-white border-slate-200 text-slate-900"
+              aria-label="Filter Comp Off requests by worked date"
+            />
+            {requestDateFilter && (
+              <Button type="button" variant="outline" size="sm" onClick={() => setRequestDateFilter('')}>
+                Clear
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           {loading ? (
             <p className="text-slate-500 text-sm">Loading...</p>
           ) : requests.length === 0 ? (
             <p className="text-slate-500 text-sm italic">No Comp Off requests yet.</p>
+          ) : filteredRequests.length === 0 ? (
+            <p className="text-slate-500 text-sm italic">No Comp Off requests found for this worked date.</p>
           ) : (
-            requests.map(r => (
-              <div key={r.id} className="border border-slate-200 rounded-lg p-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="font-semibold text-slate-900">{r.earnedStartDate} to {r.earnedEndDate} &middot; {r.compOffDays} day(s)</p>
-                    <p className="text-xs text-slate-500">Applied {r.appliedDate}</p>
-                  </div>
-                  {statusBadge(r.finalStatus)}
-                </div>
-                <p className="text-sm text-slate-600 italic">"{r.reason}"</p>
+            <Accordion type="multiple" className="space-y-2">
+              {filteredRequests.map((r) => (
+                <AccordionItem key={r.id} value={r.id} className="rounded-lg border border-slate-200 px-4">
+                  <AccordionTrigger className="gap-3 py-3 text-left hover:no-underline">
+                    <span className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-1">
+                      <span className="font-semibold text-slate-900">
+                        {r.earnedStartDate} to {r.earnedEndDate} &middot; {r.compOffDays} day(s)
+                        <span className="ml-3 text-xs font-normal text-slate-500">Applied {r.appliedDate}</span>
+                      </span>
+                      {statusBadge(r.finalStatus)}
+                    </span>
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-3">
+                    <p className="text-sm text-slate-600 italic">"{r.reason}"</p>
 
-                {/* Approval timeline */}
-                <div className="flex items-center gap-1 pt-2">
-                  <TimelineStep label="Employee" state="done" />
-                  <div className="h-px flex-1 bg-slate-200 mb-4" />
-                  <TimelineStep label="Admin" state={r.adminStatus === 'Approved' ? 'done' : r.adminStatus === 'Rejected' ? 'rejected' : 'pending'} />
-                  <div className="h-px flex-1 bg-slate-200 mb-4" />
-                  <TimelineStep label="HR" state={r.hrStatus === 'Approved' ? 'done' : r.hrStatus === 'Rejected' ? 'rejected' : 'pending'} />
-                  <div className="h-px flex-1 bg-slate-200 mb-4" />
-                  <TimelineStep label="Credited" state={r.credited ? 'done' : 'pending'} />
-                </div>
+                    <div className="flex items-center gap-1 pt-2">
+                      <TimelineStep label="Employee" state="done" />
+                      <div className="h-px flex-1 bg-slate-200 mb-4" />
+                      <TimelineStep label="Admin" state={r.adminStatus === 'Approved' ? 'done' : r.adminStatus === 'Rejected' ? 'rejected' : 'pending'} />
+                      <div className="h-px flex-1 bg-slate-200 mb-4" />
+                      <TimelineStep label="HR" state={r.hrStatus === 'Approved' ? 'done' : r.hrStatus === 'Rejected' ? 'rejected' : 'pending'} />
+                      <div className="h-px flex-1 bg-slate-200 mb-4" />
+                      <TimelineStep label="Credited" state={r.credited ? 'done' : 'pending'} />
+                    </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-slate-500 pt-1">
-                  <div>Credited: <span className="font-semibold text-slate-700">{r.creditedDays}</span></div>
-                  <div>Used: <span className="font-semibold text-slate-700">{r.usedDays}</span></div>
-                  <div>Remaining: <span className="font-semibold text-slate-700">{Math.max(0, r.creditedDays - r.usedDays)}</span></div>
-                  <div className="flex items-center gap-1"><Clock className="w-3 h-3" /> {r.finalStatus}</div>
-                </div>
-              </div>
-            ))
+                    <div className="grid grid-cols-2 gap-2 pt-1 text-xs text-slate-500 md:grid-cols-4">
+                      <div>Credited: <span className="font-semibold text-slate-700">{r.creditedDays}</span></div>
+                      <div>Used: <span className="font-semibold text-slate-700">{r.usedDays}</span></div>
+                      <div>Remaining: <span className="font-semibold text-slate-700">{Math.max(0, r.creditedDays - r.usedDays)}</span></div>
+                      <div className="flex items-center gap-1"><Clock className="w-3 h-3" /> {r.finalStatus}</div>
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+              ))}
+            </Accordion>
           )}
         </CardContent>
       </Card>

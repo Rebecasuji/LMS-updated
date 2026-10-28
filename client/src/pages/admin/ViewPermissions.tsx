@@ -4,6 +4,7 @@ import { getStoredPermissions, updatePermissionStatus, PermissionRequest } from 
 import { supabase } from '@/lib/supabaseClient';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Search, Check, X, Lock, Clock } from 'lucide-react';
@@ -27,6 +28,10 @@ export default function ViewPermissions() {
   const [permissions, setPermissions] = useState<PermissionRequest[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [rejectReason, setRejectReason] = useState('');
+  const [bulkRejectReason, setBulkRejectReason] = useState('');
+  const [bulkRejectOpen, setBulkRejectOpen] = useState(false);
+  const [selectedPermissionIds, setSelectedPermissionIds] = useState<string[]>([]);
+  const [bulkProcessing, setBulkProcessing] = useState(false);
   const [selectedPermissionId, setSelectedPermissionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -83,6 +88,7 @@ export default function ViewPermissions() {
     await updatePermissionStatus(id, status, `${user.code} (${user.name})`, reason);
     const allPermissions = await getStoredPermissions();
     setPermissions(allPermissions.filter(p => p.status === 'Pending'));
+    setSelectedPermissionIds((selected) => selected.filter((selectedId) => selectedId !== id));
 
     toast({
       title: `Permission ${status}`,
@@ -101,6 +107,54 @@ export default function ViewPermissions() {
     p.employeeCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.type.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  const togglePermissionSelection = (id: string, checked: boolean) => {
+    setSelectedPermissionIds((selected) => checked
+      ? selected.includes(id) ? selected : selected.concat(id)
+      : selected.filter((selectedId) => selectedId !== id));
+  };
+
+  const toggleAllVisiblePermissions = (checked: boolean) => {
+    const visibleIds = filteredPermissions.map((permission) => permission.id);
+    setSelectedPermissionIds((selected) => checked
+      ? selected.concat(visibleIds.filter((id) => !selected.includes(id)))
+      : selected.filter((id) => !visibleIds.includes(id)));
+  };
+
+  const handleBulkAction = async (status: 'Approved' | 'Rejected', reason?: string) => {
+    if (!user || bulkProcessing) return;
+
+    const selectedRequests = permissions.filter((permission) => selectedPermissionIds.includes(permission.id));
+    if (selectedRequests.length === 0) return;
+
+    setBulkProcessing(true);
+    const actionBy = `${user.code} (${user.name})`;
+    const completedIds: string[] = [];
+    let failedCount = 0;
+
+    for (const permission of selectedRequests) {
+      try {
+        await updatePermissionStatus(permission.id, status, actionBy, reason);
+        completedIds.push(permission.id);
+      } catch (error) {
+        console.error(`Failed to ${status.toLowerCase()} permission request ${permission.id}:`, error);
+        failedCount += 1;
+      }
+    }
+
+    const allPermissions = await getStoredPermissions();
+    setPermissions(allPermissions.filter((permission) => permission.status === 'Pending'));
+    setSelectedPermissionIds((selected) => selected.filter((id) => !completedIds.includes(id)));
+    setBulkProcessing(false);
+    setBulkRejectOpen(false);
+    setBulkRejectReason('');
+
+    toast({
+      title: failedCount === 0 ? `Permissions ${status}` : 'Some permission actions failed',
+      description: `${completedIds.length} request(s) ${status.toLowerCase()}${failedCount > 0 ? `; ${failedCount} failed and remain pending` : ''}.`,
+      variant: failedCount > 0 ? 'destructive' : undefined,
+    });
+  };
 
   const getPermissionTypeColor = (type: string) => {
     switch (type) {
@@ -135,6 +189,65 @@ export default function ViewPermissions() {
         </div>
       </div>
 
+      {filteredPermissions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3">
+          <Checkbox
+            checked={filteredPermissions.every((permission) => selectedPermissionIds.includes(permission.id))}
+            onCheckedChange={(checked) => toggleAllVisiblePermissions(checked === true)}
+            aria-label="Select all visible permission requests"
+            disabled={bulkProcessing}
+          />
+          <span className="text-sm text-slate-600">{selectedPermissionIds.length} selected</span>
+          <Button
+            onClick={() => void handleBulkAction('Approved')}
+            disabled={selectedPermissionIds.length === 0 || bulkProcessing}
+            className="bg-green-600 hover:bg-green-700 text-white"
+          >
+            <Check className="w-4 h-4 mr-2" /> Approve Selected
+          </Button>
+          <Dialog open={bulkRejectOpen} onOpenChange={setBulkRejectOpen}>
+            <DialogTrigger asChild>
+              <Button
+                variant="outline"
+                disabled={selectedPermissionIds.length === 0 || bulkProcessing}
+                className="border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
+              >
+                <X className="w-4 h-4 mr-2" /> Reject Selected
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="bg-white border-slate-200">
+              <DialogHeader>
+                <DialogTitle className="text-slate-900">Reject Selected Permission Requests</DialogTitle>
+                <DialogDescription className="text-slate-600">
+                  This reason will be recorded for all {selectedPermissionIds.length} selected requests.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div>
+                  <Label className="text-slate-700 font-medium">Reason for Rejection (Optional)</Label>
+                  <Textarea
+                    value={bulkRejectReason}
+                    onChange={(event) => setBulkRejectReason(event.target.value)}
+                    placeholder="Provide a reason for rejection..."
+                    className="mt-2 bg-white border-slate-200 text-slate-900 min-h-[100px]"
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setBulkRejectOpen(false)} disabled={bulkProcessing}>Cancel</Button>
+                <Button
+                  onClick={() => void handleBulkAction('Rejected', bulkRejectReason)}
+                  disabled={bulkProcessing}
+                  className="bg-red-600 hover:bg-red-700 text-white"
+                >
+                  Reject Selected
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4">
         {filteredPermissions.length === 0 ? (
           <div className="text-center py-12 text-slate-500 bg-slate-50 rounded-lg border border-slate-100">
@@ -147,6 +260,12 @@ export default function ViewPermissions() {
               <CardContent className="pt-6">
                 <div className="space-y-4">
                   <div className="flex items-start justify-between">
+                    <Checkbox
+                      checked={selectedPermissionIds.includes(permission.id)}
+                      onCheckedChange={(checked) => togglePermissionSelection(permission.id, checked === true)}
+                      aria-label={`Select permission request for ${permission.employeeName || permission.employeeCode}`}
+                      disabled={bulkProcessing}
+                    />
                     <div className="space-y-1">
                       <div className="flex items-center gap-3">
                         <p className="font-semibold text-slate-900">{permission.employeeName ? `${permission.employeeName} (${permission.employeeId || permission.employeeCode})` : (permission.employeeCode || permission.employeeId)}</p>

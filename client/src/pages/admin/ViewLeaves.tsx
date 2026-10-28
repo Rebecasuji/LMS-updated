@@ -4,6 +4,7 @@ import { getStoredLeaves, updateLeaveStatus } from '@/lib/storage';
 import { supabase } from '@/lib/supabaseClient';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Search, Check, X, FileText } from 'lucide-react';
@@ -27,6 +28,10 @@ export default function ViewLeaves() {
   const [leaves, setLeaves] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [rejectReason, setRejectReason] = useState('');
+  const [bulkRejectReason, setBulkRejectReason] = useState('');
+  const [bulkRejectOpen, setBulkRejectOpen] = useState(false);
+  const [selectedLeaveIds, setSelectedLeaveIds] = useState<string[]>([]);
+  const [bulkProcessing, setBulkProcessing] = useState(false);
   const [selectedLeaveId, setSelectedLeaveId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -83,6 +88,7 @@ export default function ViewLeaves() {
     await updateLeaveStatus(id, status, `${user.code} (${user.name})`, reason);
     const allLeaves = await getStoredLeaves();
     setLeaves(allLeaves.filter(l => l.status === 'Pending'));
+    setSelectedLeaveIds((selected) => selected.filter((selectedId) => selectedId !== id));
 
     toast({
       title: `Leave ${status}`,
@@ -101,6 +107,54 @@ export default function ViewLeaves() {
     l.employeeCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
     l.type.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  const toggleLeaveSelection = (id: string, checked: boolean) => {
+    setSelectedLeaveIds((selected) => checked
+      ? selected.includes(id) ? selected : selected.concat(id)
+      : selected.filter((selectedId) => selectedId !== id));
+  };
+
+  const toggleAllVisibleLeaves = (checked: boolean) => {
+    const visibleIds = filteredLeaves.map((leave) => leave.id);
+    setSelectedLeaveIds((selected) => checked
+      ? selected.concat(visibleIds.filter((id) => !selected.includes(id)))
+      : selected.filter((id) => !visibleIds.includes(id)));
+  };
+
+  const handleBulkAction = async (status: 'Approved' | 'Rejected', reason?: string) => {
+    if (!user || bulkProcessing) return;
+
+    const selectedLeaves = leaves.filter((leave) => selectedLeaveIds.includes(leave.id));
+    if (selectedLeaves.length === 0) return;
+
+    setBulkProcessing(true);
+    const actionBy = `${user.code} (${user.name})`;
+    const completedIds: string[] = [];
+    let failedCount = 0;
+
+    for (const leave of selectedLeaves) {
+      try {
+        await updateLeaveStatus(leave.id, status, actionBy, reason);
+        completedIds.push(leave.id);
+      } catch (error) {
+        console.error(`Failed to ${status.toLowerCase()} leave request ${leave.id}:`, error);
+        failedCount += 1;
+      }
+    }
+
+    const allLeaves = await getStoredLeaves();
+    setLeaves(allLeaves.filter((leave) => leave.status === 'Pending'));
+    setSelectedLeaveIds((selected) => selected.filter((id) => !completedIds.includes(id)));
+    setBulkProcessing(false);
+    setBulkRejectOpen(false);
+    setBulkRejectReason('');
+
+    toast({
+      title: failedCount === 0 ? `Leaves ${status}` : 'Some leave actions failed',
+      description: `${completedIds.length} request(s) ${status.toLowerCase()}${failedCount > 0 ? `; ${failedCount} failed and remain pending` : ''}.`,
+      variant: failedCount > 0 ? 'destructive' : undefined,
+    });
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
@@ -125,6 +179,64 @@ export default function ViewLeaves() {
         <p className="font-bold">⚠️ Note: OD and Comp Off leaves require approval from both HR and Admin before they are finalized.</p>
       </div>
 
+      {filteredLeaves.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3">
+          <Checkbox
+            checked={filteredLeaves.every((leave) => selectedLeaveIds.includes(leave.id))}
+            onCheckedChange={(checked) => toggleAllVisibleLeaves(checked === true)}
+            aria-label="Select all visible leave requests"
+            disabled={bulkProcessing}
+          />
+          <span className="text-sm text-slate-600">{selectedLeaveIds.length} selected</span>
+          <Button
+            onClick={() => void handleBulkAction('Approved')}
+            disabled={selectedLeaveIds.length === 0 || bulkProcessing}
+            className="bg-green-600 hover:bg-green-700 text-white"
+          >
+            <Check className="w-4 h-4 mr-2" /> Approve Selected
+          </Button>
+          <Dialog open={bulkRejectOpen} onOpenChange={setBulkRejectOpen}>
+            <DialogTrigger asChild>
+              <Button
+                variant="outline"
+                disabled={selectedLeaveIds.length === 0 || bulkProcessing}
+                className="border-red-200 bg-red-50 text-red-600 hover:bg-red-100"
+              >
+                <X className="w-4 h-4 mr-2" /> Reject Selected
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="bg-white border-slate-200">
+              <DialogHeader>
+                <DialogTitle className="text-slate-900">Reject Selected Leave Requests</DialogTitle>
+                <DialogDescription className="text-slate-500">
+                  Provide a reason that will be recorded for all {selectedLeaveIds.length} selected requests.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="py-4">
+                <Label htmlFor="bulk-leave-reason" className="text-slate-700 font-bold mb-2 block">Rejection Reason</Label>
+                <Textarea
+                  id="bulk-leave-reason"
+                  value={bulkRejectReason}
+                  onChange={(event) => setBulkRejectReason(event.target.value)}
+                  placeholder="Provide a reason for rejection..."
+                  className="bg-white border-slate-200 text-slate-900"
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setBulkRejectOpen(false)} disabled={bulkProcessing}>Cancel</Button>
+                <Button
+                  onClick={() => void handleBulkAction('Rejected', bulkRejectReason)}
+                  disabled={!bulkRejectReason.trim() || bulkProcessing}
+                  className="bg-red-600 hover:bg-red-700 text-white"
+                >
+                  Reject Selected
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4">
         {filteredLeaves.length === 0 ? (
           <div className="text-center py-12 text-slate-500 bg-slate-50 rounded-lg border border-slate-100 italic">
@@ -137,6 +249,12 @@ export default function ViewLeaves() {
                 <div className="flex flex-col md:flex-row justify-between gap-6">
                   <div className="space-y-2">
                     <div className="flex items-center gap-3">
+                      <Checkbox
+                        checked={selectedLeaveIds.includes(leave.id)}
+                        onCheckedChange={(checked) => toggleLeaveSelection(leave.id, checked === true)}
+                        aria-label={`Select leave request for ${leave.employeeName || leave.employeeCode}`}
+                        disabled={bulkProcessing}
+                      />
                       {/* Show name and id together when possible (e.g. "Naveen Kumar (E0053)") */}
                       <div className="flex items-center gap-3">
                         <h3 className="text-xl font-bold text-slate-900">{leave.employeeName ? `${leave.employeeName} (${leave.employeeId || leave.employeeCode})` : (leave.employeeCode || leave.employeeId)}</h3>

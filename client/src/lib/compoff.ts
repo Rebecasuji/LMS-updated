@@ -90,6 +90,21 @@ export async function applyCompOff(params: {
 }) {
   const compOffDays = inclusiveDayCount(params.earnedStartDate, params.earnedEndDate);
 
+  const { data: existingRequests, error: existingRequestsError } = await supabase
+    .from('comp_off_requests')
+    .select('earned_start_date, earned_end_date')
+    .eq('user_id', params.employeeId)
+    .lte('earned_start_date', params.earnedEndDate)
+    .gte('earned_end_date', params.earnedStartDate);
+
+  if (existingRequestsError) {
+    console.error('Error checking existing Comp Off dates:', existingRequestsError);
+    throw existingRequestsError;
+  }
+  if (existingRequests && existingRequests.length > 0) {
+    throw new Error('A Comp Off application already exists for one or more dates in this range.');
+  }
+
   const { data, error } = await supabase
     .from('comp_off_requests')
     .insert({
