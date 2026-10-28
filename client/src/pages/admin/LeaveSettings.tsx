@@ -31,15 +31,19 @@ import {
   ShiftSettings,
   HolidaySettings,
   HolidayEntry,
+  PermissionSettings,
   DEFAULT_LEAVE_SETTINGS,
   DEFAULT_SHIFT_SETTINGS,
   DEFAULT_HOLIDAY_SETTINGS,
+  DEFAULT_PERMISSION_SETTINGS,
   fetchLeaveSettings,
   saveLeaveSettings,
   fetchShiftSettings,
   saveShiftSettings,
   fetchHolidaySettings,
   saveHolidaySettings as saveHolidaySettingsApi,
+  fetchPermissionSettings,
+  savePermissionSettings,
 } from '@/lib/settings';
 import { getAllUsersAsync } from '@/lib/storage';
 import { User } from '@/lib/data';
@@ -47,11 +51,14 @@ import { DepartmentsManager } from '@/components/DepartmentsManager';
 
 export default function LeaveSettingsPage() {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState<'leave' | 'shifts' | 'holidays' | 'departments'>('leave');
+  const [activeTab, setActiveTab] = useState<'leave' | 'permissions' | 'shifts' | 'holidays' | 'departments'>('leave');
 
   // Leave Settings State
   const [leaveSettings, setLeaveSettings] = useState<LeaveSettings>(DEFAULT_LEAVE_SETTINGS);
   const [savingLeave, setSavingLeave] = useState(false);
+
+  const [permissionSettings, setPermissionSettings] = useState<PermissionSettings>(DEFAULT_PERMISSION_SETTINGS);
+  const [savingPermissions, setSavingPermissions] = useState(false);
 
   // Shift Settings State
   const [shiftSettings, setShiftSettings] = useState<ShiftSettings>(DEFAULT_SHIFT_SETTINGS);
@@ -75,13 +82,15 @@ export default function LeaveSettingsPage() {
     async function load() {
       setLoading(true);
       try {
-        const [ls, ss, hs, emps] = await Promise.all([
+        const [ls, ps, ss, hs, emps] = await Promise.all([
           fetchLeaveSettings(),
+          fetchPermissionSettings(),
           fetchShiftSettings(),
           fetchHolidaySettings(),
           getAllUsersAsync(),
         ]);
         setLeaveSettings(ls);
+        setPermissionSettings(ps);
         setShiftSettings(ss);
         setHolidaySettings(hs);
         setEmployees(emps);
@@ -119,6 +128,33 @@ export default function LeaveSettingsPage() {
       });
     } finally {
       setSavingLeave(false);
+    }
+  };
+
+  const handleSavePermissionSettings = async () => {
+    setSavingPermissions(true);
+    try {
+      const ok = await savePermissionSettings(permissionSettings);
+      if (ok) {
+        toast({
+          title: '✅ Permission Limit Saved',
+          description: 'The maximum total permission duration per employee per day has been updated.',
+          className: 'bg-emerald-500 text-white border-none',
+        });
+      } else {
+        toast({
+          title: 'Notice',
+          description: 'Permission limit saved locally. Server sync may take a moment.',
+        });
+      }
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: err?.message || 'Failed to save permission settings.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingPermissions(false);
     }
   };
 
@@ -301,20 +337,27 @@ export default function LeaveSettingsPage() {
             Settings
           </h1>
           <p className="text-slate-500 text-sm mt-1">
-            Configure advance booking rules for <strong>PL, CL, SL</strong>, manage <strong>Shift Timings</strong>, control <strong>Government Holidays</strong>, and create <strong>Departments</strong>.
+            Configure leave and daily permission limits, manage <strong>Shift Timings</strong>, control <strong>Government Holidays</strong>, and create <strong>Departments</strong>.
           </p>
         </div>
       </div>
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={(val) => setActiveTab(val as any)} className="w-full">
-        <TabsList className="grid w-full max-w-3xl grid-cols-4 bg-slate-100 p-1 rounded-xl">
+        <TabsList className="grid w-full max-w-5xl grid-cols-2 md:grid-cols-5 bg-slate-100 p-1 rounded-xl">
           <TabsTrigger
             value="leave"
             className="rounded-lg font-semibold data-[state=active]:bg-white data-[state=active]:text-blue-700 data-[state=active]:shadow-sm flex items-center gap-2 py-2.5"
           >
             <CalendarDays className="w-4 h-4" />
             Leave Rules
+          </TabsTrigger>
+          <TabsTrigger
+            value="permissions"
+            className="rounded-lg font-semibold data-[state=active]:bg-white data-[state=active]:text-blue-700 data-[state=active]:shadow-sm flex items-center gap-2 py-2.5"
+          >
+            <Clock className="w-4 h-4" />
+            Permissions
           </TabsTrigger>
           <TabsTrigger
             value="shifts"
@@ -687,6 +730,55 @@ export default function LeaveSettingsPage() {
               {savingLeave ? 'Saving Rules...' : 'Save Leave Rules'}
             </Button>
           </div>
+        </TabsContent>
+
+        <TabsContent value="permissions" className="space-y-6 pt-4">
+          <Card className="max-w-2xl border-blue-200 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-xl font-bold text-slate-900">Daily Permission Limit</CardTitle>
+              <CardDescription>
+                Set the maximum combined permission time an employee may request for one date.
+                Pending and approved requests count toward the limit; rejected requests do not.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="space-y-2">
+                <Label htmlFor="daily-permission-limit">Maximum total hours per employee per day</Label>
+                <div className="flex items-center gap-3">
+                  <Input
+                    id="daily-permission-limit"
+                    type="number"
+                    min={0.25}
+                    max={24}
+                    step={0.25}
+                    value={permissionSettings.dailyLimitMinutes / 60}
+                    onChange={(e) => {
+                      const hours = Number(e.target.value);
+                      setPermissionSettings({
+                        dailyLimitMinutes: Number.isFinite(hours) ? Math.round(hours * 60) : 0,
+                      });
+                    }}
+                    className="max-w-40 bg-white border-slate-300 font-semibold text-slate-900"
+                  />
+                  <span className="text-sm text-slate-500">hours</span>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Requests that would exceed this daily total are blocked. The existing 2-hour maximum per request remains unchanged.
+                </p>
+              </div>
+              <Button
+                onClick={handleSavePermissionSettings}
+                disabled={savingPermissions || permissionSettings.dailyLimitMinutes < 15 || permissionSettings.dailyLimitMinutes > 1440}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold flex items-center gap-2"
+              >
+                {savingPermissions ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {savingPermissions ? 'Saving...' : 'Save Permission Limit'}
+              </Button>
+              {(permissionSettings.dailyLimitMinutes < 15 || permissionSettings.dailyLimitMinutes > 1440) && (
+                <p className="text-xs text-red-600">Enter a daily limit between 0.25 and 24 hours.</p>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* ==================================================================== */}

@@ -167,3 +167,87 @@ export function generateResetPasswordEmail(username: string, resetLink: string):
     </div>
   `;
 }
+
+export function generateLeaveDecisionEmail(
+  employeeName: string,
+  leaveType: string,
+  startDate: string,
+  endDate: string,
+  status: 'Approved' | 'Rejected',
+  actionBy: string,
+  reason?: string
+): string {
+  const isApproved = status === 'Approved';
+  const headerColor = isApproved ? '#16a34a' : '#dc2626';
+  const badgeBg = isApproved ? '#dcfce7' : '#fee2e2';
+  const badgeColor = isApproved ? '#15803d' : '#b91c1c';
+  const title = isApproved ? 'Leave Request Approved' : 'Leave Request Rejected';
+
+  return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+      <div style="background-color: ${headerColor}; padding: 20px; color: white;">
+        <h2 style="margin: 0; font-size: 20px;">${title}</h2>
+      </div>
+      <div style="padding: 24px;">
+        <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155;">Hello <strong>${employeeName}</strong>,</p>
+        <p style="margin: 0 0 20px 0; font-size: 14px; color: #64748b;">
+          Your leave request has been <span style="display: inline-block; padding: 2px 10px; border-radius: 9999px; font-weight: bold; background-color: ${badgeBg}; color: ${badgeColor}; font-size: 13px;">${status}</span> by <strong>${actionBy}</strong>.
+        </p>
+
+        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 16px; margin-bottom: 20px;">
+          <p style="margin: 6px 0;"><strong>Leave Type:</strong> ${leaveType}</p>
+          <p style="margin: 6px 0;"><strong>Dates:</strong> ${startDate}${endDate && endDate !== startDate ? ` to ${endDate}` : ''}</p>
+          <p style="margin: 6px 0;"><strong>Decision By:</strong> ${actionBy}</p>
+          ${reason ? `<p style="margin: 6px 0;"><strong>Remarks:</strong> ${reason}</p>` : ''}
+        </div>
+
+        <p style="margin: 0; font-size: 12px; color: #94a3b8;">
+          You can check your updated leave balance in your LMS dashboard.
+        </p>
+      </div>
+    </div>
+  `;
+}
+
+export function generatePermissionDecisionEmail(
+  employeeName: string,
+  permissionType: string,
+  date: string,
+  startTime: string,
+  endTime: string,
+  status: 'Approved' | 'Rejected',
+  actionBy: string,
+  reason?: string
+): string {
+  const isApproved = status === 'Approved';
+  const headerColor = isApproved ? '#16a34a' : '#dc2626';
+  const badgeBg = isApproved ? '#dcfce7' : '#fee2e2';
+  const badgeColor = isApproved ? '#15803d' : '#b91c1c';
+  const title = isApproved ? 'Permission Request Approved' : 'Permission Request Rejected';
+
+  return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+      <div style="background-color: ${headerColor}; padding: 20px; color: white;">
+        <h2 style="margin: 0; font-size: 20px;">${title}</h2>
+      </div>
+      <div style="padding: 24px;">
+        <p style="margin: 0 0 16px 0; font-size: 15px; color: #334155;">Hello <strong>${employeeName}</strong>,</p>
+        <p style="margin: 0 0 20px 0; font-size: 14px; color: #64748b;">
+          Your permission request has been <span style="display: inline-block; padding: 2px 10px; border-radius: 9999px; font-weight: bold; background-color: ${badgeBg}; color: ${badgeColor}; font-size: 13px;">${status}</span> by <strong>${actionBy}</strong>.
+        </p>
+
+        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 16px; margin-bottom: 20px;">
+          <p style="margin: 6px 0;"><strong>Permission Type:</strong> ${permissionType}</p>
+          <p style="margin: 6px 0;"><strong>Date:</strong> ${date}</p>
+          <p style="margin: 6px 0;"><strong>Time Slot:</strong> ${startTime || ''} - ${endTime || ''}</p>
+          <p style="margin: 6px 0;"><strong>Decision By:</strong> ${actionBy}</p>
+          ${reason ? `<p style="margin: 6px 0;"><strong>Remarks:</strong> ${reason}</p>` : ''}
+        </div>
+
+        <p style="margin: 0; font-size: 12px; color: #94a3b8;">
+          You can check your permission history in your LMS dashboard.
+        </p>
+      </div>
+    </div>
+  `;
+}

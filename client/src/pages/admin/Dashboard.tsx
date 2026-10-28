@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Search, Clock, FileText, MessageSquare, CheckCircle, RefreshCw, Send, Power } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { StatCards } from '@/components/StatCards';
+import { LeaveCalendar } from '@/components/LeaveCalendar';
 import { useToast } from '@/hooks/use-toast';
 
 import { useEffect, useState } from 'react';
@@ -15,6 +16,7 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [cliqStatus, setCliqStatus] = useState<{ configured: boolean; hasRefreshToken: boolean; hasWebhook: boolean; channel?: string } | null>(null);
   const [testingCliq, setTestingCliq] = useState(false);
+  const [sendingReport, setSendingReport] = useState(false);
   const { toast } = useToast();
 
   const fetchCliqStatus = async () => {
@@ -86,6 +88,40 @@ export default function AdminDashboard() {
     }
   };
 
+  const handleSendDailyReport = async () => {
+    if (!window.confirm('Send today\'s attendance report to the connected Cliq channel?')) return;
+
+    setSendingReport(true);
+    try {
+      const res = await fetch('/api/cliq/send-daily-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast({
+          title: 'Daily Report Sent',
+          description: data.message || 'The attendance report was sent to Cliq.',
+        });
+      } else {
+        toast({
+          title: 'Could Not Send Daily Report',
+          description: data.message || 'Please verify Cliq authorization.',
+          variant: 'destructive',
+        });
+      }
+    } catch (err) {
+      toast({
+        title: 'Error',
+        description: 'Failed to send the daily attendance report.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSendingReport(false);
+    }
+  };
+
   const handleDisconnectCliq = async () => {
     try {
       const res = await fetch('/api/cliq/disconnect', { method: 'POST' });
@@ -132,6 +168,15 @@ export default function AdminDashboard() {
               >
                 <Send className="w-3 h-3" />
                 {testingCliq ? 'Sending...' : 'Test Alert'}
+              </button>
+              <button
+                onClick={handleSendDailyReport}
+                disabled={sendingReport}
+                className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded font-medium text-xs transition-colors"
+                title="Send today's attendance report to the connected Cliq channel"
+              >
+                <FileText className="w-3 h-3" />
+                {sendingReport ? 'Sending...' : 'Send Daily Report'}
               </button>
               <button
                 onClick={handleDisconnectCliq}
@@ -211,6 +256,9 @@ export default function AdminDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Hanging calendar: who is on leave / OD / permission this month */}
+      <LeaveCalendar leaves={leaves} permissions={permissions} />
     </div>
   );
 }

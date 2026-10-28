@@ -291,6 +291,15 @@ export interface HolidaySettings {
   holidays: HolidayEntry[];
 }
 
+export interface PermissionSettings {
+  dailyLimitMinutes: number;
+}
+
+export const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = {
+  dailyLimitMinutes: 120,
+};
+
+const PERMISSION_SETTINGS_FILE = path.join(DATA_DIR, 'permission_settings.json');
 const HOLIDAY_SETTINGS_FILE = path.join(DATA_DIR, 'holiday_settings.json');
 
 export const DEFAULT_HOLIDAY_SETTINGS: HolidaySettings = {
@@ -399,15 +408,83 @@ export async function saveHolidaySettings(settings: HolidaySettings): Promise<bo
   return true;
 }
 
+let cachedPermissionSettings: PermissionSettings | null = null;
+
+export async function getPermissionSettings(): Promise<PermissionSettings> {
+  if (cachedPermissionSettings) return cachedPermissionSettings;
+
+  const dbPool = getPool();
+  if (dbPool) {
+    try {
+      const res = await dbPool.query("SELECT value FROM settings WHERE key = 'lms_permission_settings' LIMIT 1");
+      if (res.rows.length > 0 && res.rows[0].value) {
+        const resolved = { ...DEFAULT_PERMISSION_SETTINGS, ...JSON.parse(res.rows[0].value) };
+        cachedPermissionSettings = resolved;
+        return resolved;
+      }
+    } catch (err: any) {
+      console.warn('[SETTINGS] DB query for permission settings failed, falling back:', err.message);
+    }
+  }
+
+  try {
+    if (fs.existsSync(PERMISSION_SETTINGS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(PERMISSION_SETTINGS_FILE, 'utf-8'));
+      const resolved = { ...DEFAULT_PERMISSION_SETTINGS, ...parsed };
+      cachedPermissionSettings = resolved;
+      return resolved;
+    }
+  } catch (err: any) {
+    console.warn('[SETTINGS] File read for permission settings failed:', err.message);
+  }
+
+  cachedPermissionSettings = { ...DEFAULT_PERMISSION_SETTINGS };
+  return cachedPermissionSettings;
+}
+
+export async function savePermissionSettings(settings: PermissionSettings): Promise<boolean> {
+  if (!Number.isInteger(settings.dailyLimitMinutes) || settings.dailyLimitMinutes < 15 || settings.dailyLimitMinutes > 1440) {
+    throw new Error('Daily permission limit must be between 15 minutes and 24 hours.');
+  }
+
+  cachedPermissionSettings = { ...settings };
+  try {
+    fs.writeFileSync(PERMISSION_SETTINGS_FILE, JSON.stringify(cachedPermissionSettings, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[SETTINGS] Failed to write permission settings to file:', err);
+  }
+
+  const dbPool = getPool();
+  if (dbPool) {
+    try {
+      const jsonStr = JSON.stringify(cachedPermissionSettings);
+      const existing = await dbPool.query("SELECT id FROM settings WHERE key = 'lms_permission_settings' LIMIT 1");
+      if (existing.rows.length > 0) {
+        await dbPool.query("UPDATE settings SET value = $1, updated_at = NOW() WHERE key = 'lms_permission_settings'", [jsonStr]);
+      } else {
+        await dbPool.query(
+          "INSERT INTO settings (id, key, value, created_at, updated_at) VALUES (gen_random_uuid(), 'lms_permission_settings', $1, NOW(), NOW())",
+          [jsonStr]
+        );
+      }
+    } catch (err: any) {
+      console.error('[SETTINGS] DB save for permission settings failed:', err.message);
+    }
+  }
+
+  return true;
+}
+
 /**
  * Returns the effective cutoff minutes from midnight for a given employee code.
  * E.g. If assigned 09:30 AM shift with 15 mins grace -> returns 9*60 + 30 + 15 = 585 (9:45 AM).
  */
-export async function getEmployeeCutoffMinutes(empCode?: string): Promise<{ cutoffMinutes: number; shiftName: string; shiftStartTime: string; graceMinutes: number }> {
+export async function getEmployeeCutoffMinutes(empCode?: string, employeeAlias?: string): Promise<{ cutoffMinutes: number; shiftName: string; shiftStartTime: string; graceMinutes: number }> {
   const settings = await getShiftSettings();
   const normalizedCode = (empCode || '').trim().toUpperCase();
+  const normalizedAlias = (employeeAlias || '').trim().toUpperCase();
 
-  const shiftId = settings.employeeShifts[normalizedCode] || settings.defaultShiftId;
+  const shiftId = settings.employeeShifts[normalizedAlias] || settings.employeeShifts[normalizedCode] || settings.defaultShiftId;
   const shift = settings.shifts.find(s => s.id === shiftId) || settings.shifts[0] || DEFAULT_SHIFT_SETTINGS.shifts[1];
 
   // Parse shift start time (e.g. "09:30 AM" or "10:00 AM")

@@ -173,8 +173,10 @@ export default function ApplyLeave() {
     }
     if (watchedLeaveType === 'OT') {
       form.setValue('duration', 'Hourly');
+    } else if (watchedLeaveType === 'Privilege' && watchedDuration !== 'Full Day') {
+      form.setValue('duration', 'Full Day');
     }
-  }, [watchedLeaveType]);
+  }, [watchedLeaveType, watchedDuration]);
 
   // Live Comp Off coverage preview: whenever type is "Comp Off" and both dates
   // are set, show exactly which dates are covered by approved Comp Off balance
@@ -763,7 +765,7 @@ export default function ApplyLeave() {
             <div className="space-y-2">
               <Label className="text-slate-700 font-medium">Duration</Label>
               <RadioGroup
-                defaultValue="Full Day"
+                value={watchedDuration || 'Full Day'}
                 onValueChange={(val) => {
                   form.setValue('duration', val as any);
                   // Clear time fields when switching away from Hourly
@@ -778,10 +780,12 @@ export default function ApplyLeave() {
                   <RadioGroupItem value="Full Day" id="full" className="border-slate-300 text-primary" />
                   <Label htmlFor="full" className="text-slate-900">Full Day</Label>
                 </div>
-                <div className="flex items-center space-x-2">
-                  <RadioGroupItem value="Half Day" id="half" className="border-slate-300 text-primary" />
-                  <Label htmlFor="half" className="text-slate-900">Half Day</Label>
-                </div>
+                {watchedLeaveType !== 'Privilege' && (
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="Half Day" id="half" className="border-slate-300 text-primary" />
+                    <Label htmlFor="half" className="text-slate-900">Half Day</Label>
+                  </div>
+                )}
                 {(watchedLeaveType === 'OD' || watchedLeaveType === 'OT') && (
                   <div className="flex items-center space-x-2">
                     <RadioGroupItem value="Hourly" id="hourly" className="border-slate-300 text-primary" />

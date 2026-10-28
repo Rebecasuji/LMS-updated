@@ -1,7 +1,9 @@
 import { supabaseServer } from './supabaseServerClient';
 import { cliqService } from './cliq';
 import { Pool } from 'pg';
-import { getEmployeeCutoffMinutes } from './settingsManager';
+import { getEmployeeCutoffMinutes, getShiftSettings } from './settingsManager';
+
+const SHORT_HOURS_GRACE_MINUTES = 4;
 
 export interface AttendanceReportSummary {
   date: string;
@@ -35,19 +37,50 @@ export interface AttendanceReportSummary {
     firstPunch: string;
     delayMinutes: number;
     delayFormatted: string;
+    status?: string;
   }>;
+  attendanceToday?: Array<{
+    name: string;
+    code: string;
+    punchIn: string;
+    status: string;
+    lateByMinutes: number;
+  }>;
+  notPunchedIn?: Array<{ name: string; code: string }>;
   shortHours: Array<{
     name: string;
     code: string;
+    punchIn?: string;
+    punchOut?: string;
     totalHours: string;
+    shortfall?: string;
   }>;
   incompletePunches: Array<{
     name: string;
     code: string;
     punchCount: number;
     lastPunch: string;
+    punchIn?: string;
   }>;
   totalPresent: number;
+  yesterday?: {
+    date: string;
+    shortHours: Array<{
+      name: string;
+      code: string;
+      punchIn?: string;
+      punchOut?: string;
+      totalHours: string;
+      shortfall?: string;
+    }>;
+    incompletePunches: Array<{
+      name: string;
+      code: string;
+      punchCount: number;
+      lastPunch: string;
+      punchIn?: string;
+    }>;
+  };
 }
 
 // In-memory deduplication tracking for daily reports
@@ -167,7 +200,167 @@ function formatISTTime(utcDate: Date): { formatted: string; minutesFromMidnight:
   };
 }
 
-export async function generateDailyAttendanceReport(targetDate?: string, force = false): Promise<{
+function getISTDate(utcDate: Date): string {
+  const istDate = new Date(utcDate.getTime() + 5.5 * 60 * 60 * 1000);
+  return `${istDate.getUTCFullYear()}-${String(istDate.getUTCMonth() + 1).padStart(2, '0')}-${String(istDate.getUTCDate()).padStart(2, '0')}`;
+}
+
+function formatDuration(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = Math.floor(minutes % 60);
+  return `${hours} hour${hours === 1 ? '' : 's'} ${remainingMinutes} minute${remainingMinutes === 1 ? '' : 's'}`;
+}
+
+function getRequestStatus(status: string | undefined): string {
+  const normalizedStatus = (status || '').trim().toLowerCase();
+  if (normalizedStatus === 'approved') return 'Approved';
+  if (normalizedStatus === 'rejected') return 'Rejected';
+  return 'Pending Approval';
+}
+
+interface AttendancePunch {
+  name: string;
+  punchTime: Date;
+  punchState: string | null;
+}
+
+function pairAttendancePunches(punches: AttendancePunch[]): {
+  pairs: Array<[AttendancePunch, AttendancePunch]>;
+  missingExit: AttendancePunch[];
+} {
+  const seenPunches = new Set<string>();
+  const orderedPunches = punches
+    .filter((punch) => {
+      const state = (punch.punchState || '').trim().toUpperCase();
+      const timestamp = ['IN', 'OUT'].includes(state)
+        ? punch.punchTime.getTime()
+        : Math.floor(punch.punchTime.getTime() / 60000);
+      const key = `${timestamp}|${state}`;
+      if (seenPunches.has(key)) return false;
+      seenPunches.add(key);
+      return true;
+    })
+    .sort((first, second) => first.punchTime.getTime() - second.punchTime.getTime());
+  if (orderedPunches.length < 2) {
+    return { pairs: [], missingExit: orderedPunches };
+  }
+
+  return {
+    pairs: [[orderedPunches[0], orderedPunches[orderedPunches.length - 1]]],
+    missingExit: [],
+  };
+}
+
+function getPreviousDate(dateStr: string): string {
+  const date = new Date(`${dateStr}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
+async function analyzeDayHours(
+  dateStr: string,
+  userMap: Record<string, string>,
+  db: NonNullable<typeof supabaseServer>,
+): Promise<NonNullable<AttendanceReportSummary['yesterday']>> {
+  const { data: leavesData, error: leavesError } = await (db.from('leaves') as any)
+    .select('user_id, username, leave_type, status, start_date, end_date')
+    .lte('start_date', dateStr)
+    .gte('end_date', dateStr);
+
+  if (leavesError) {
+    console.error(`[ATTENDANCE-REPORT] Error querying leaves for ${dateStr}:`, leavesError);
+  }
+
+  const approvedLeaveCodes = new Set<string>();
+  (leavesData || []).forEach((leave: any) => {
+    const type = (leave.leave_type || '').trim().toUpperCase();
+    const isDutyOrOvertime = type === 'OD' || type.includes('ON DUTY') || type.includes('ONDUTY') ||
+      type === 'OT' || type.includes('OVERTIME') || type.includes('OVER TIME');
+    if ((leave.status || '').trim().toLowerCase() !== 'approved' || isDutyOrOvertime) return;
+    const userId = (leave.user_id || '').trim().toUpperCase();
+    const username = (leave.username || '').trim().toUpperCase();
+    if (userId) approvedLeaveCodes.add(userId);
+    if (username) approvedLeaveCodes.add(username);
+  });
+
+  const shortHours: NonNullable<AttendanceReportSummary['yesterday']>['shortHours'] = [];
+  const incompletePunches: NonNullable<AttendanceReportSummary['yesterday']>['incompletePunches'] = [];
+  const pool = getPayrollPool();
+
+  if (pool) {
+    try {
+      const queryText = `
+        SELECT
+          a.emp_code,
+          COALESCE(e.name, a.emp_code) as name,
+          a.punch_time AT TIME ZONE 'Asia/Kolkata' as punch_time,
+          a.punch_state
+        FROM attendance_logs a
+        LEFT JOIN LATERAL (
+          SELECT employee.name
+          FROM employees employee
+          WHERE UPPER(employee.employee_code) = UPPER(a.emp_code)
+          ORDER BY employee.created_at DESC NULLS LAST, employee.id
+          LIMIT 1
+        ) e ON TRUE
+        WHERE a.punch_time >= $1::date
+          AND a.punch_time < ($1::date + INTERVAL '1 day')
+        ORDER BY a.punch_time ASC;
+      `;
+      const result = await pool.query(queryText, [dateStr]);
+      const punchesByEmployee: Record<string, AttendancePunch[]> = {};
+
+      result.rows.forEach((row: any) => {
+        const code = (row.emp_code || '').trim().toUpperCase();
+        const punchTime = new Date(row.punch_time);
+        if (!code || approvedLeaveCodes.has(code) || getISTDate(punchTime) !== dateStr) return;
+        const dbName = (row.name || '').trim();
+        const name = userMap[code] || (dbName && dbName.toUpperCase() !== code ? dbName : code);
+        if (!punchesByEmployee[code]) punchesByEmployee[code] = [];
+        punchesByEmployee[code].push({ name, punchTime, punchState: row.punch_state || null });
+      });
+
+      Object.entries(punchesByEmployee).forEach(([code, punches]) => {
+        const { pairs, missingExit } = pairAttendancePunches(punches);
+        if (missingExit.length > 0) {
+          incompletePunches.push({
+            name: punches[0].name,
+            code,
+            punchCount: punches.length,
+            lastPunch: formatISTTime(missingExit[missingExit.length - 1].punchTime).formatted,
+            punchIn: formatISTTime(missingExit[missingExit.length - 1].punchTime).formatted,
+          });
+        }
+        if (missingExit.length > 0 || pairs.length === 0) return;
+
+        let durationMinutes = 0;
+        pairs.forEach(([entry, exit]) => {
+          durationMinutes += (exit.punchTime.getTime() - entry.punchTime.getTime()) / 60000;
+        });
+        if (durationMinutes < 540 - SHORT_HOURS_GRACE_MINUTES) {
+          shortHours.push({
+            name: punches[0].name,
+            code,
+            punchIn: formatISTTime(pairs[0][0].punchTime).formatted,
+            punchOut: formatISTTime(pairs[pairs.length - 1][1].punchTime).formatted,
+            totalHours: formatDuration(durationMinutes),
+            shortfall: formatDuration(540 - durationMinutes),
+          });
+        }
+      });
+    } catch (error) {
+      console.error(`[ATTENDANCE-REPORT] Failed to query Payroll DB attendance_logs for ${dateStr}:`, error);
+    }
+  }
+
+  return { date: dateStr, shortHours, incompletePunches };
+}
+
+export async function generateDailyAttendanceReport(
+  targetDate?: string,
+  force = false,
+  includeYesterday = true,
+): Promise<{
   success: boolean;
   message: string;
   summary?: AttendanceReportSummary;
@@ -183,6 +376,12 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
   const officeStartTimeStr = process.env.OFFICE_START_TIME || '10:15 AM';
   const officeStartMinutes = parseTimeToMinutes(officeStartTimeStr);
   const isEndOfDay = isEndOfDaySummaryTime(targetDate);
+  const reportGeneratedAt = new Date();
+  const shiftSettings = await getShiftSettings();
+  const gracePeriods = Array.from(new Set(shiftSettings.shifts.map((shift) => shift.graceMinutes || 15)));
+  const officeCutoffText = gracePeriods.length === 1
+    ? `${gracePeriods[0]} minutes`
+    : `${gracePeriods.join(', ')} minutes (varies by shift)`;
 
   const db = supabaseServer;
   if (!db) {
@@ -192,13 +391,21 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
   try {
     // 1. Fetch user & employee names from LMS Supabase
     const userMap: Record<string, string> = {};
+    const employeeDirectory: Record<string, string> = {};
+    const inactiveEmployeeCodes = new Set<string>();
 
     try {
-      const { data: employeesData } = await db.from('employees').select('employee_code, name');
+      const { data: employeesData } = await db.from('employees').select('employee_code, name, is_active');
       (employeesData || []).forEach((e: any) => {
         const code = (e.employee_code || '').trim().toUpperCase();
-        if (code && e.name) {
-          userMap[code] = e.name.trim();
+        if (code) {
+          const name = (e.name || code).trim();
+          userMap[code] = name;
+          if (e.is_active === false) {
+            inactiveEmployeeCodes.add(code);
+          } else {
+            employeeDirectory[code] = name;
+          }
         }
       });
     } catch (e) {
@@ -206,17 +413,34 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
     }
 
     try {
-      const { data: usersData } = await db.from('users').select('user_id, username, email, name');
-      (usersData || []).forEach((u: any) => {
-        const uid = (u.user_id || '').trim().toUpperCase();
-        const uname = (u.username || '').trim().toUpperCase();
-        const realName = (u.name || '').trim();
-        if (realName) {
-          if (uid && !userMap[uid]) userMap[uid] = realName;
-          if (uname && !userMap[uname]) userMap[uname] = realName;
-        }
-      });
-    } catch (e) {}
+      const { data: usersData, error: usersError } = await db
+        .from('users')
+        .select('user_id, username, role, is_active');
+      if (usersError) {
+        console.warn('[ATTENDANCE-REPORT] Could not query LMS user activity status:', usersError);
+      } else {
+        (usersData || []).forEach((user: any) => {
+          const userId = (user.user_id || '').trim().toUpperCase();
+          const username = (user.username || '').trim();
+          const usernameKey = username.toUpperCase();
+          if (user.is_active === false) {
+            if (userId) inactiveEmployeeCodes.add(userId);
+            if (usernameKey) inactiveEmployeeCodes.add(usernameKey);
+            return;
+          }
+          if ((user.role || '').trim().toLowerCase() !== 'employee') return;
+
+          const code = userId || usernameKey;
+          if (!code) return;
+          const employeeName = userMap[code] || username || code;
+          employeeDirectory[code] = employeeName;
+          if (userId && !userMap[userId]) userMap[userId] = employeeName;
+          if (usernameKey && !userMap[usernameKey]) userMap[usernameKey] = employeeName;
+        });
+      }
+    } catch (error) {
+      console.warn('[ATTENDANCE-REPORT] Could not query LMS user activity status:', error);
+    }
 
     const formatEmp = (name: string, code: string) => {
       const cleanName = (name || '').trim();
@@ -240,24 +464,26 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
     const leavesToday: AttendanceReportSummary['leavesToday'] = [];
     const onDutyToday: AttendanceReportSummary['onDutyToday'] = [];
     const approvedLeaveEmployeeCodes = new Set<string>();
-    const allOdEmployeeCodes = new Set<string>();
     const approvedOdEmployeeCodes = new Set<string>();
 
     (leavesData || []).forEach((l: any) => {
-      const code = (l.user_id || l.username || '').trim().toUpperCase();
+      const codes = [l.user_id, l.username]
+        .filter(Boolean)
+        .map((value: string) => value.trim().toUpperCase());
+      const code = codes[0] || '';
       const resolvedName = l.employee_name || userMap[code] || l.username || code;
       const leaveTypeStr = (l.leave_type || '').trim();
       const upperType = leaveTypeStr.toUpperCase();
-      const isApproved = (l.status || '').toLowerCase() === 'approved';
+      const status = getRequestStatus(l.status);
+      const isApproved = status === 'Approved';
 
       const isOD = upperType === 'OD' || upperType.includes('ON DUTY') || upperType.includes('ONDUTY');
       const isOT = upperType === 'OT' || upperType.includes('OVERTIME') || upperType.includes('OVER TIME');
 
       if (isOD) {
         // OD is On Duty -> Marked as Present, NOT on leave
-        allOdEmployeeCodes.add(code);
         if (isApproved) {
-          approvedOdEmployeeCodes.add(code);
+          codes.forEach((employeeCode) => approvedOdEmployeeCodes.add(employeeCode));
         }
 
         let durationText = l.leave_duration_type || 'Full Day';
@@ -270,21 +496,21 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
         onDutyToday.push({
           name: resolvedName,
           code,
-          status: isApproved ? 'Approved' : 'Pending',
+          status,
           duration: durationText,
           reason: l.reason || undefined,
         });
       } else if (!isOT) {
         // Genuine Leaves only (Casual, Sick, LWP, Earned, Privilege, Comp Off, etc.)
-        if (isApproved && code) {
-          approvedLeaveEmployeeCodes.add(code);
+        if (isApproved) {
+          codes.forEach((employeeCode) => approvedLeaveEmployeeCodes.add(employeeCode));
         }
 
         leavesToday.push({
           name: resolvedName,
           code,
           leaveType: leaveTypeStr || 'Leave',
-          status: isApproved ? 'Approved' : 'Pending',
+          status,
           duration: l.leave_duration_type || 'Full Day',
           reason: l.reason || undefined,
         });
@@ -293,7 +519,7 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
 
     // 3. Fetch Permissions for today from LMS Supabase
     const { data: permissionsData, error: permissionsErr } = await (db.from('permissions') as any)
-      .select('id, user_id, username, employee_name, name, employee_code, permission_type, permission_date, from_time, to_time, reason, status, created_at');
+      .select('id, user_id, username, permission_type, permission_date, from_time, to_time, reason, status, created_at');
 
     if (permissionsErr) {
       console.warn('[ATTENDANCE-REPORT] Error querying permissions:', permissionsErr);
@@ -310,13 +536,17 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
     const approvedLateEntryCodes = new Set<string>();
 
     (permissionsData || []).forEach((p: any) => {
-      const pDate = p.permission_date || (p.created_at ? p.created_at.split('T')[0] : '');
+      const permissionDate = p.permission_date ? String(p.permission_date) : '';
+      const pDate = permissionDate
+        ? (permissionDate.includes('T') ? getISTDate(new Date(permissionDate)) : permissionDate.slice(0, 10))
+        : (p.created_at ? getISTDate(new Date(p.created_at)) : '');
       if (pDate !== dateStr) return;
 
       const rawCode = (p.employee_code || p.username || p.user_id || '').trim().toUpperCase();
       const code = /^E\d+/i.test(rawCode) ? rawCode : (userMap[rawCode] ? rawCode : rawCode);
       const name = p.employee_name || p.name || userMap[code] || p.username || code;
-      const isApproved = (p.status || '').toLowerCase() === 'approved';
+      const status = getRequestStatus(p.status);
+      const isApproved = status === 'Approved';
 
       const permType = PERMISSION_DISPLAY[p.permission_type] || p.permission_type || 'Permission';
       const fromTime = formatTimeTo12Hour(p.from_time);
@@ -332,7 +562,7 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
         code,
         type: permType,
         timeRange,
-        status: isApproved ? 'Approved' : 'Pending',
+        status,
         reason: p.reason || undefined,
       });
     });
@@ -342,6 +572,7 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
       emp_code: string;
       name: string;
       punch_time: Date;
+      punch_state: string | null;
     }> = [];
 
     const pool = getPayrollPool();
@@ -351,11 +582,18 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
           SELECT 
             a.emp_code,
             COALESCE(e.name, a.emp_code) as name,
-            a.punch_time
+            a.punch_time AT TIME ZONE 'Asia/Kolkata' as punch_time,
+            a.punch_state
           FROM attendance_logs a
-          LEFT JOIN employees e ON UPPER(e.employee_code) = UPPER(a.emp_code)
-          WHERE a.punch_time >= ($1::date - INTERVAL '5 hours 30 minutes')
-            AND a.punch_time < ($1::date + INTERVAL '1 day' - INTERVAL '5 hours 30 minutes')
+          LEFT JOIN LATERAL (
+            SELECT employee.name
+            FROM employees employee
+            WHERE UPPER(employee.employee_code) = UPPER(a.emp_code)
+            ORDER BY employee.created_at DESC NULLS LAST, employee.id
+            LIMIT 1
+          ) e ON TRUE
+          WHERE a.punch_time >= $1::date
+            AND a.punch_time < ($1::date + INTERVAL '1 day')
           ORDER BY a.punch_time ASC;
         `;
         const res = await pool.query(queryText, [dateStr]);
@@ -367,8 +605,12 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
             emp_code: empCode,
             name: resolvedName,
             punch_time: new Date(r.punch_time),
+            punch_state: r.punch_state || null,
           };
-        });
+        }).filter((row: (typeof punchRows)[number]) =>
+          getISTDate(row.punch_time) === dateStr &&
+          (dateStr !== getTodayDateIST() || row.punch_time.getTime() <= reportGeneratedAt.getTime())
+        );
         console.log(`[ATTENDANCE-REPORT] Fetched ${punchRows.length} punch records from Payroll DB for ${dateStr}.`);
       } catch (dbErr) {
         console.error('[ATTENDANCE-REPORT] Failed to query Payroll DB attendance_logs:', dbErr);
@@ -379,6 +621,7 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
     const latecomers: AttendanceReportSummary['latecomers'] = [];
     const shortHours: AttendanceReportSummary['shortHours'] = [];
     const incompletePunches: AttendanceReportSummary['incompletePunches'] = [];
+    const attendanceToday: NonNullable<AttendanceReportSummary['attendanceToday']> = [];
 
     // Group punches by employee
     const punchesByEmp: Record<string, typeof punchRows> = {};
@@ -389,64 +632,108 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
     }
 
     for (const [empCode, empPunches] of Object.entries(punchesByEmp)) {
-      // Exclude employees on approved leave today
-      if (approvedLeaveEmployeeCodes.has(empCode)) {
-        continue;
-      }
-
       const empName = userMap[empCode] || empPunches[0]?.name || empCode;
-
-      // Sort punches chronologically
-      empPunches.sort((a, b) => a.punch_time.getTime() - b.punch_time.getTime());
-
-      const firstPunch = empPunches[0];
-      const { formatted: firstPunchFormatted, minutesFromMidnight: firstPunchMinutes } = formatISTTime(firstPunch.punch_time);
+      const { pairs, missingExit } = pairAttendancePunches(empPunches.map((punch) => ({
+        name: punch.name,
+        punchTime: punch.punch_time,
+        punchState: punch.punch_state,
+      })));
+      const firstPunch = pairs[0]?.[0] || missingExit[0];
+      if (!firstPunch) continue;
+      const { formatted: firstPunchFormatted, minutesFromMidnight: firstPunchMinutes } = formatISTTime(firstPunch.punchTime);
 
       // Check if employee has On-Duty (OD) or Approved Late Entry Permission
-      const isOnDuty = allOdEmployeeCodes.has(empCode) || approvedOdEmployeeCodes.has(empCode);
+      const isOnDuty = approvedOdEmployeeCodes.has(empCode);
       const hasLateEntryPerm = approvedLateEntryCodes.has(empCode);
 
       // Latecomers check: Evaluate based on employee's configured shift cutoff
       // Exclude employees on OD (they are on duty) and employees with approved late entry permission
-      const { cutoffMinutes: empCutoffMinutes } = await getEmployeeCutoffMinutes(empCode);
+      const { cutoffMinutes: empCutoffMinutes } = await getEmployeeCutoffMinutes(empCode, empName);
       const effectiveCutoff = empCutoffMinutes || officeStartMinutes;
+      const isOnApprovedLeave = approvedLeaveEmployeeCodes.has(empCode);
+      const delay = firstPunchMinutes > effectiveCutoff && !isOnDuty && !hasLateEntryPerm && !isOnApprovedLeave
+        ? firstPunchMinutes - effectiveCutoff
+        : 0;
 
-      if (firstPunchMinutes > effectiveCutoff && !isOnDuty && !hasLateEntryPerm) {
-        const delay = firstPunchMinutes - effectiveCutoff;
+      attendanceToday.push({
+        name: empName,
+        code: empCode,
+        punchIn: firstPunchFormatted,
+        status: isOnDuty ? 'On Duty' : (isOnApprovedLeave ? 'On Approved Leave' : (hasLateEntryPerm ? 'Permission' : (delay > 0 ? 'Late' : 'On Time'))),
+        lateByMinutes: delay,
+      });
+
+      if (delay > 0) {
         latecomers.push({
           name: empName,
           code: empCode,
           firstPunch: firstPunchFormatted,
           delayMinutes: delay,
           delayFormatted: formatLateDelay(delay),
+          status: 'Late',
         });
       }
 
-      // Check Working Duration (< 9 hours = 540 minutes) & Incomplete punches
-      if (empPunches.length < 2) {
+      if (missingExit.length > 0) {
         incompletePunches.push({
           name: empName,
           code: empCode,
           punchCount: empPunches.length,
-          lastPunch: firstPunchFormatted,
+          lastPunch: formatISTTime(missingExit[missingExit.length - 1].punchTime).formatted,
+          punchIn: formatISTTime(missingExit[missingExit.length - 1].punchTime).formatted,
         });
-      } else {
-        const lastPunch = empPunches[empPunches.length - 1];
-        const durationMinutes = (lastPunch.punch_time.getTime() - firstPunch.punch_time.getTime()) / (1000 * 60);
-
-        if (durationMinutes < 540) {
-          const hours = Math.floor(durationMinutes / 60);
-          const mins = Math.floor(durationMinutes % 60);
+      } else if (pairs.length > 0) {
+        let durationMinutes = 0;
+        pairs.forEach(([entry, exit]) => {
+          durationMinutes += (exit.punchTime.getTime() - entry.punchTime.getTime()) / 60000;
+        });
+        if (durationMinutes < 540 - SHORT_HOURS_GRACE_MINUTES) {
           shortHours.push({
             name: empName,
             code: empCode,
-            totalHours: `${hours}h ${mins}m`,
+            punchIn: firstPunchFormatted,
+            punchOut: formatISTTime(pairs[pairs.length - 1][1].punchTime).formatted,
+            totalHours: formatDuration(durationMinutes),
+            shortfall: formatDuration(540 - durationMinutes),
           });
         }
       }
     }
 
-    const totalPresent = Object.keys(punchesByEmp).length;
+    const excusedEmployees = new Set([
+      ...Array.from(approvedLeaveEmployeeCodes),
+      ...Array.from(approvedOdEmployeeCodes),
+      ...Array.from(approvedLateEntryCodes),
+    ]);
+    if (pool) {
+      try {
+        const inactiveEmployees = await pool.query(
+          "SELECT UPPER(employee_code) AS employee_code, name, status FROM employees WHERE employee_code IS NOT NULL"
+        );
+        inactiveEmployees.rows.forEach((employee: { employee_code: string; name: string | null; status: string | null }) => {
+          const code = employee.employee_code.trim().toUpperCase();
+          if ((employee.status || '').trim().toLowerCase() === 'inactive') {
+            inactiveEmployeeCodes.add(code);
+          } else if (!inactiveEmployeeCodes.has(code)) {
+            employeeDirectory[code] = userMap[code] || (employee.name || code).trim();
+          }
+        });
+      } catch (error) {
+        console.error('[ATTENDANCE-REPORT] Could not query Payroll employee directory:', error);
+      }
+    }
+    const notPunchedIn = Object.entries(employeeDirectory)
+      .filter(([code]) =>
+        !punchesByEmp[code] &&
+        !excusedEmployees.has(code) &&
+        !inactiveEmployeeCodes.has(code)
+      )
+      .map(([code, name]) => ({ code, name }));
+    const totalPresent = attendanceToday.length;
+
+    const yesterdaySummary = includeYesterday
+      ? await analyzeDayHours(getPreviousDate(dateStr), userMap, db)
+      : undefined;
 
     const summary: AttendanceReportSummary = {
       date: dateStr,
@@ -458,100 +745,111 @@ export async function generateDailyAttendanceReport(targetDate?: string, force =
       shortHours,
       incompletePunches,
       totalPresent,
+      attendanceToday,
+      notPunchedIn,
+      ...(yesterdaySummary ? { yesterday: yesterdaySummary } : {}),
     };
 
     // Construct formatted Zoho Cliq Message
     const messageLines: string[] = [
-      `🤖 **[LMS Automated Notification]**`,
-      `📊 **DAILY ATTENDANCE & LEAVE REPORT**`,
-      `📅 **Date:** ${dateStr}  |  ⏰ **Office Cutoff:** ${officeStartTimeStr}`,
+      `# 📊 LMS DAILY ATTENDANCE & LEAVE REPORT`,
+      `**Date:** ${dateStr}`,
+      `**Office Cutoff:** ${officeCutoffText}`,
+      `**Report Generated:** ${formatISTTime(reportGeneratedAt).formatted}`,
       `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
     ];
 
-    // Section 1: Employees on Leave
     messageLines.push(`🌴 **1. EMPLOYEES ON LEAVE TODAY (${leavesToday.length})**`);
     if (leavesToday.length === 0) {
       messageLines.push(`_No employees on leave today._`);
     } else {
       leavesToday.forEach((l, idx) => {
-        const statusBadge = l.status === 'Approved' ? '✅ Approved' : '🟡 Pending Approval';
-        const reasonText = l.reason ? ` — _${l.reason}_` : '';
-        messageLines.push(`${idx + 1}. ${formatEmp(l.name, l.code || '')} — ${l.leaveType} (${l.duration || 'Full Day'}) [${statusBadge}]${reasonText}`);
+        const employee = `**${l.name} (${(l.code || '').toUpperCase()})**`;
+        messageLines.push(`${idx + 1}. ${employee}`);
+        messageLines.push(`Leave Type: ${l.leaveType} | Duration: ${l.duration || 'Full Day'}`);
+        messageLines.push(`Status: ${l.status}`);
+        messageLines.push(`Reason: ${l.reason || 'Not provided'}`);
       });
     }
 
     messageLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
-    // Section 2: Employees On Duty (OD) - Marked as Present
     messageLines.push(`💼 **2. EMPLOYEES ON DUTY (OD) TODAY (${onDutyToday.length})**`);
-    messageLines.push(`_📌 On-Duty (OD) indicates employee is Present/On Duty, not on leave._`);
     if (onDutyToday.length === 0) {
-      messageLines.push(`_No employees on duty (OD) today._`);
+      messageLines.push(`No employees on official duty today.`);
     } else {
       onDutyToday.forEach((od, idx) => {
-        const statusBadge = od.status === 'Approved' ? '✅ Approved' : '🟡 Pending Approval';
-        const reasonText = od.reason ? ` — _${od.reason}_` : '';
-        messageLines.push(`${idx + 1}. ${formatEmp(od.name, od.code || '')} — On Duty (${od.duration}) [${statusBadge}]${reasonText}`);
+        messageLines.push(`${idx + 1}. **${od.name} (${(od.code || '').toUpperCase()})**`);
+        messageLines.push(`Status: ${od.status} | Duration: ${od.duration}`);
+        if (od.reason) messageLines.push(`Reason: ${od.reason}`);
       });
     }
 
     messageLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
-    // Section 3: Permissions Applied Today
     messageLines.push(`📋 **3. PERMISSIONS TODAY (${permissionsToday.length})**`);
     if (permissionsToday.length === 0) {
-      messageLines.push(`_No permissions applied for today._`);
+      messageLines.push(`No permissions recorded for today.`);
     } else {
       permissionsToday.forEach((p, idx) => {
-        const statusBadge = p.status === 'Approved' ? '✅ Approved' : '🟡 Pending Approval';
-        const reasonText = p.reason ? ` — _${p.reason}_` : '';
-        messageLines.push(`${idx + 1}. ${formatEmp(p.name, p.code || '')} — ${p.type} (${p.timeRange}) [${statusBadge}]${reasonText}`);
+        messageLines.push(`${idx + 1}. **${p.name} (${(p.code || '').toUpperCase()})**`);
+        messageLines.push(`Permission: ${p.type} | Timing: ${p.timeRange}`);
+        messageLines.push(`Status: ${p.status}`);
+        if (p.reason) messageLines.push(`Reason: ${p.reason}`);
       });
     }
 
     messageLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
-    // Section 4: Today's Late Arrivals (After Cutoff)
-    messageLines.push(`⏰ **4. TODAY'S LATE ARRIVALS (${latecomers.length})**`);
-    messageLines.push(`_Arrived after ${officeStartTimeStr} cutoff_`);
-    if (latecomers.length === 0) {
-      messageLines.push(punchRows.length === 0 ? `_No punch records found for ${dateStr}._` : `_No late arrivals today! Everyone on time._`);
+    messageLines.push(`⏰ **4. TODAY'S ATTENDANCE & LATE ARRIVALS**`);
+    const lateEmployees = attendanceToday.filter((employee) => employee.lateByMinutes > 0);
+    if (lateEmployees.length === 0) {
+      messageLines.push(`No employees are late today.`);
     } else {
-      latecomers.forEach((lc, idx) => {
-        messageLines.push(`${idx + 1}. ${formatEmp(lc.name, lc.code)} — In: ${lc.firstPunch} (${lc.delayFormatted})`);
+      lateEmployees.forEach((employee, idx) => {
+        messageLines.push(`${idx + 1}. **${employee.name} (${employee.code})** — ${employee.punchIn} — **LATE BY ${employee.lateByMinutes} MINUTES**`);
+      });
+    }
+    messageLines.push(`Employees expected to work today without a punch-in (${notPunchedIn.length}):`);
+    if (notPunchedIn.length === 0) {
+      messageLines.push(`All expected employees have punched in or have an applicable approved leave, OD, or late-entry permission.`);
+    } else {
+      notPunchedIn.forEach((employee, idx) => {
+        messageLines.push(`${idx + 1}. **${employee.name} (${employee.code})**`);
       });
     }
 
-    // Sections 5 & 6 are ONLY displayed in End-of-Day summary (>= 18:30 IST / past dates).
-    // In the morning / daytime, employees are still working, so awaiting punch out is hidden!
-    if (isEndOfDay) {
+    if (yesterdaySummary) {
       messageLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      messageLines.push(`⏱️ **5. EMPLOYEES WORKING LESS THAN 9 HOURS (${shortHours.length})**`);
-      if (shortHours.length === 0) {
-        messageLines.push(punchRows.length === 0 ? `_No punch records found for ${dateStr}._` : `_All clocked-out employees completed 9+ hours!_`);
+      messageLines.push(`# 🕘 YESTERDAY'S WORKING-HOURS REPORT`);
+      messageLines.push(`**Attendance Date:** ${yesterdaySummary.date}`);
+      messageLines.push(`**Minimum Required Working Hours:** 9 hours`);
+      messageLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      messageLines.push(`⚠️ **5. EMPLOYEES WHO WORKED LESS THAN 9 HOURS (${yesterdaySummary.shortHours.length})**`);
+      if (yesterdaySummary.shortHours.length === 0) {
+        messageLines.push(`No employees worked less than 9 hours yesterday.`);
       } else {
-        shortHours.forEach((sh, idx) => {
-          messageLines.push(`${idx + 1}. ${formatEmp(sh.name, sh.code)} — Net Duration: ${sh.totalHours}`);
+        yesterdaySummary.shortHours.forEach((employee, idx) => {
+          messageLines.push(`${idx + 1}. **${employee.name} (${employee.code})**`);
+          messageLines.push(`Punch In: ${employee.punchIn}`);
+          messageLines.push(`Punch Out: ${employee.punchOut}`);
+          messageLines.push(`Total Working Hours: ${employee.totalHours}`);
+          messageLines.push(`Shortfall: ${employee.shortfall}`);
         });
       }
-
-      if (incompletePunches.length > 0) {
-        messageLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        messageLines.push(`⚠️ **6. INCOMPLETE ATTENDANCE / NO EXIT PUNCH (${incompletePunches.length})**`);
-        incompletePunches.forEach((ip, idx) => {
-          messageLines.push(`${idx + 1}. ${formatEmp(ip.name, ip.code)} — First Punch: ${ip.lastPunch} (Awaiting out-punch)`);
+      messageLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      messageLines.push(`🚪 **6. EMPLOYEES WITH NO EXIT PUNCH YESTERDAY (${yesterdaySummary.incompletePunches.length})**`);
+      if (yesterdaySummary.incompletePunches.length === 0) {
+        messageLines.push(`All employees have valid punch-in and punch-out records, or no incomplete records were found.`);
+      } else {
+        yesterdaySummary.incompletePunches.forEach((employee, idx) => {
+          messageLines.push(`${idx + 1}. **${employee.name} (${employee.code})**`);
+          messageLines.push(`Punch In: ${employee.punchIn}`);
+          messageLines.push(`Exit Punch: Not Recorded`);
+          messageLines.push(`Status: Incomplete Attendance`);
         });
       }
     }
-
-    // Summary Footer
-    messageLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    messageLines.push(`📊 **ATTENDANCE SUMMARY**`);
-    messageLines.push(`• **Present (Punched In):** ${totalPresent}`);
-    messageLines.push(`• **On Duty (OD):** ${onDutyToday.length} (Present)`);
-    messageLines.push(`• **On Leave:** ${leavesToday.length}`);
-    messageLines.push(`• **Permissions:** ${permissionsToday.length}`);
-    messageLines.push(`• **Late Arrivals:** ${latecomers.length}`);
 
     const fullMessage = messageLines.join('\n');
 

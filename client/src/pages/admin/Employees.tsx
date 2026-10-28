@@ -22,7 +22,7 @@ import { Label } from '@/components/ui/label';
 export default function Employees() {
   const { user: currentUser } = useAuth();
   const [users, setUsers] = useState<any[]>([]);
-  const [showInactive, setShowInactive] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<'active' | 'inactive' | 'all'>('active');
   const [searchTerm, setSearchTerm] = useState('');
   const [editingUser, setEditingUser] = useState<any>(null);
   const [editName, setEditName] = useState('');
@@ -39,7 +39,9 @@ export default function Employees() {
   }, []);
 
   const filteredUsers = users.filter(u =>
-    (showInactive || u.isActive !== false) &&
+    (statusFilter === 'all' ||
+      (statusFilter === 'active' && u.isActive !== false) ||
+      (statusFilter === 'inactive' && u.isActive === false)) &&
     (u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       u.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (u.designation || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -119,8 +121,8 @@ export default function Employees() {
           <h2 className="text-3xl font-display font-bold text-slate-900 mb-2">Employees Directory</h2>
           <p className="text-slate-600">Manage employee details and roles</p>
         </div>
-        <div className="flex flex-col gap-2 w-full md:w-96">
-          <div className="relative">
+        <div className="flex flex-col sm:flex-row gap-2 w-full md:w-[28rem]">
+          <div className="relative flex-1 min-w-0">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <Input
               placeholder="Search employees..."
@@ -129,10 +131,18 @@ export default function Employees() {
               className="pl-10 bg-white border-slate-200 text-slate-900 focus:border-primary/50"
             />
           </div>
-          <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
-            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} data-testid="checkbox-show-inactive" />
-            Show inactive employees
-          </label>
+          <div className="w-full sm:w-44 shrink-0">
+            <Select value={statusFilter} onValueChange={(value: 'active' | 'inactive' | 'all') => setStatusFilter(value)}>
+              <SelectTrigger className="w-full bg-white border-slate-200 text-slate-900" data-testid="select-employee-status">
+                <SelectValue placeholder="Filter by status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="active">Active employees</SelectItem>
+                <SelectItem value="inactive">Inactive employees</SelectItem>
+                <SelectItem value="all">All employees</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </div>
 

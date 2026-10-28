@@ -6,14 +6,17 @@ import {
   sendEmailNotification,
   generateLeaveNotificationEmail,
   generatePermissionNotificationEmail,
-  generateResetPasswordEmail
+  generateResetPasswordEmail,
+  generateLeaveDecisionEmail,
+  generatePermissionDecisionEmail,
 } from "./email";
 
 import { getNotificationEmailsServer, supabaseServer } from "./supabaseServerClient";
 import crypto from "crypto";
 import { cliqService } from "./cliq";
 import { generateDailyAttendanceReport } from "./attendanceReport";
-import { getLeaveSettings, saveLeaveSettings, getShiftSettings, saveShiftSettings, getHolidaySettings, saveHolidaySettings } from "./settingsManager";
+import { checkAndRunScheduledReport, markDailyReportSent } from "./scheduler";
+import { getLeaveSettings, saveLeaveSettings, getShiftSettings, saveShiftSettings, getHolidaySettings, saveHolidaySettings, getPermissionSettings, savePermissionSettings } from "./settingsManager";
 
 
 export async function registerRoutes(
@@ -174,18 +177,17 @@ export async function registerRoutes(
         if (!isNaN(existingStart) && !isNaN(existingEnd) && reqStart <= existingEnd && reqEnd >= existingStart) {
           const existingStartMinutes = parseTimeMinutes(existing.from_time || existing.od_from_time);
           const existingEndMinutes = parseTimeMinutes(existing.to_time || existing.od_to_time);
-          const isHourlyOdOtPair =
+          const isHourlyOdOtRequestPair =
             isHourlyOdOrOt &&
             existing.leave_duration_type === 'Hourly' &&
-            ((leave.type === 'OD' && existing.leave_type === 'OT') ||
-              (leave.type === 'OT' && existing.leave_type === 'OD'));
+            (existing.leave_type === 'OD' || existing.leave_type === 'OT');
           const sameSingleDate =
             reqStart === reqEnd &&
             existingStart === existingEnd &&
             reqStart === existingStart;
 
           if (
-            isHourlyOdOtPair &&
+            isHourlyOdOtRequestPair &&
             sameSingleDate &&
             existingStartMinutes !== null &&
             existingEndMinutes !== null &&
@@ -498,6 +500,42 @@ export async function registerRoutes(
           actionBy: actionBy || "Manager",
           reason,
         }).catch((err) => console.error("[ZOHO-CLIQ] Status update alert failed:", err));
+
+        // Send email notification to the employee
+        try {
+          const empId = row.user_id || row.username;
+          if (empId && db) {
+            const { data: empUser } = await (db.from("users") as any)
+              .select("email, name, username")
+              .or(`user_id.eq.${empId},username.eq.${empId}`)
+              .maybeSingle();
+
+            const empEmail = empUser?.email;
+            const empName = row.employee_name || empUser?.name || empUser?.username || empId;
+
+            if (empEmail) {
+              const decisionHtml = generateLeaveDecisionEmail(
+                empName,
+                row.leave_type,
+                row.start_date,
+                row.end_date,
+                status as 'Approved' | 'Rejected',
+                actionBy || "Manager",
+                reason
+              );
+              sendEmailNotification({
+                to: [empEmail],
+                subject: `Your Leave Request has been ${status}`,
+                html: decisionHtml,
+                type: 'leave',
+              }).catch((err) => console.error("[EMAIL] Employee leave decision email failed:", err));
+            } else {
+              console.warn(`[EMAIL] No email found for employee ${empId} — skipping decision email`);
+            }
+          }
+        } catch (emailErr) {
+          console.error("[EMAIL] Error sending leave decision email to employee:", emailErr);
+        }
       }
 
       res.json({ success: true, data: updatedLeave });
@@ -551,6 +589,43 @@ export async function registerRoutes(
           actionBy: actionBy || "Manager",
           reason,
         }).catch((err) => console.error("[ZOHO-CLIQ] Permission status update alert failed:", err));
+
+        // Send email notification to the employee
+        try {
+          const empId = row?.user_id || row?.username;
+          if (empId && db) {
+            const { data: empUser } = await (db.from("users") as any)
+              .select("email, name, username")
+              .or(`user_id.eq.${empId},username.eq.${empId}`)
+              .maybeSingle();
+
+            const empEmail = empUser?.email;
+            const empDisplayName = emp || empUser?.name || empUser?.username || empId;
+
+            if (empEmail) {
+              const decisionHtml = generatePermissionDecisionEmail(
+                empDisplayName,
+                pType,
+                date || row?.permission_date || '',
+                startTime || row?.from_time || '',
+                endTime || row?.to_time || '',
+                status as 'Approved' | 'Rejected',
+                actionBy || "Manager",
+                reason
+              );
+              sendEmailNotification({
+                to: [empEmail],
+                subject: `Your Permission Request has been ${status}`,
+                html: decisionHtml,
+                type: 'permission',
+              }).catch((err) => console.error("[EMAIL] Employee permission decision email failed:", err));
+            } else {
+              console.warn(`[EMAIL] No email found for employee ${empId} — skipping permission decision email`);
+            }
+          }
+        } catch (emailErr) {
+          console.error("[EMAIL] Error sending permission decision email to employee:", emailErr);
+        }
       }
 
       res.json({ success: true, data: updatedPermission });
@@ -611,9 +686,18 @@ export async function registerRoutes(
     try {
       const { date, force } = req.body || {};
       const result = await generateDailyAttendanceReport(date, force !== false);
+      if (result.success && !date) markDailyReportSent();
       res.json(result);
     } catch (err: any) {
       res.status(500).json({ success: false, message: err?.message || "Failed to trigger report" });
+    }
+  });
+
+  app.get("/api/cliq/cron-check", async (_req, res) => {
+    try {
+      res.json(await checkAndRunScheduledReport());
+    } catch (err: any) {
+      res.status(500).json({ ran: false, message: err?.message || "Failed to check scheduled report" });
     }
   });
 
@@ -691,6 +775,25 @@ export async function registerRoutes(
       res.json({ success: true, message: "Holiday settings saved successfully", settings: await getHolidaySettings() });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err?.message || "Failed to save holiday settings" });
+    }
+  });
+
+  app.get("/api/settings/permissions", async (_req, res) => {
+    try {
+      const settings = await getPermissionSettings();
+      res.json({ success: true, settings });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to get permission settings" });
+    }
+  });
+
+  app.post("/api/settings/permissions", async (req, res) => {
+    try {
+      const dailyLimitMinutes = Number(req.body?.dailyLimitMinutes);
+      await savePermissionSettings({ dailyLimitMinutes });
+      res.json({ success: true, message: "Permission settings saved successfully", settings: await getPermissionSettings() });
+    } catch (err: any) {
+      res.status(400).json({ success: false, message: err?.message || "Failed to save permission settings" });
     }
   });
 

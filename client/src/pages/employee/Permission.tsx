@@ -11,8 +11,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { Lock, AlertTriangle } from 'lucide-react';
-import { addPermissionRequest, PermissionRequest, getMonthlyPermissionCount, calculateDurationMinutes } from '@/lib/storage';
-import { useState } from 'react';
+import { addPermissionRequest, PermissionRequest, getMonthlyPermissionCount, getDailyPermissionMinutes, calculateDurationMinutes } from '@/lib/storage';
+import { fetchPermissionSettings } from '@/lib/settings';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -22,7 +23,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-const permissionSchema = z.object({
+const formatPermissionLimit = (minutes: number) => {
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours && remainingMinutes) return `${hours}h ${remainingMinutes}m (${minutes} minutes)`;
+  if (hours) return `${hours} hour${hours === 1 ? '' : 's'} (${minutes} minutes)`;
+  return `${minutes} minutes`;
+};
+
+const createPermissionSchema = (dailyLimitMinutes: number) => z.object({
   type: z.enum(['Late Entry Permission', 'Early Exit Permission', 'Personal Work Permission', 'Emergency Permission']),
   date: z.string().min(1, "Date is required"),
   startTime: z.string().min(1, "Start time is required"),
@@ -40,19 +49,18 @@ const permissionSchema = z.object({
   message: "End time must be after start time",
   path: ["endTime"],
 }).refine((data) => {
-  // Validate that duration doesn't exceed 2 hours (120 minutes)
   const [startHour, startMin] = data.startTime.split(':').map(Number);
   const [endHour, endMin] = data.endTime.split(':').map(Number);
   const startTotalMin = startHour * 60 + startMin;
   const endTotalMin = endHour * 60 + endMin;
   const durationMinutes = endTotalMin - startTotalMin;
-  return durationMinutes <= 120;
+  return durationMinutes <= dailyLimitMinutes;
 }, {
-  message: "Permission duration cannot exceed 2 hours (120 minutes)",
+  message: `Permission duration cannot exceed the configured daily limit of ${formatPermissionLimit(dailyLimitMinutes)}`,
   path: ["endTime"],
 });
 
-type PermissionForm = z.infer<typeof permissionSchema>;
+type PermissionForm = z.infer<ReturnType<typeof createPermissionSchema>>;
 
 export default function Permission({ onClose }: { onClose?: () => void }) {
   const { user } = useAuth();
@@ -62,6 +70,30 @@ export default function Permission({ onClose }: { onClose?: () => void }) {
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null);
   const [monthlyCount, setMonthlyCount] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [dailyPermissionLimitMinutes, setDailyPermissionLimitMinutes] = useState(120);
+  const [loadingPermissionLimit, setLoadingPermissionLimit] = useState(true);
+  const permissionSchema = useMemo(
+    () => createPermissionSchema(dailyPermissionLimitMinutes),
+    [dailyPermissionLimitMinutes],
+  );
+
+  useEffect(() => {
+    let mounted = true;
+    fetchPermissionSettings()
+      .then((settings) => {
+        if (mounted) setDailyPermissionLimitMinutes(settings.dailyLimitMinutes);
+      })
+      .catch((error) => {
+        console.error('Failed to load daily permission limit:', error);
+      })
+      .finally(() => {
+        if (mounted) setLoadingPermissionLimit(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const form = useForm<PermissionForm>({
     resolver: zodResolver(permissionSchema),
@@ -82,6 +114,38 @@ export default function Permission({ onClose }: { onClose?: () => void }) {
       return;
     }
 
+    const durationMinutes = calculateDurationMinutes(data.startTime, data.endTime);
+    let dailyLimitMinutes: number;
+    let dailyUsedMinutes: number;
+    try {
+      const permissionSettings = await fetchPermissionSettings();
+      dailyLimitMinutes = permissionSettings.dailyLimitMinutes;
+      dailyUsedMinutes = await getDailyPermissionMinutes(user_id, data.date);
+    } catch (err) {
+      console.error('Failed to check daily permission limit:', err);
+      toast({
+        title: 'Unable to check daily limit',
+        description: 'Please try again. Your permission request was not submitted.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (dailyUsedMinutes + durationMinutes > dailyLimitMinutes) {
+      const remainingMinutes = Math.max(0, dailyLimitMinutes - dailyUsedMinutes);
+      const formatDuration = (minutes: number) => {
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+        return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+      };
+      toast({
+        title: 'Daily permission limit exceeded',
+        description: `You already have ${formatDuration(dailyUsedMinutes)} of pending or approved permission for this date. You can request only ${formatDuration(remainingMinutes)} more; this request was not submitted.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
     // Check monthly permission count
     const count = await getMonthlyPermissionCount(user_id, data.date);
     setMonthlyCount(count);
@@ -99,7 +163,7 @@ export default function Permission({ onClose }: { onClose?: () => void }) {
       additionalInfo: data.additionalInfo,
       status: 'Pending',
       appliedDate: new Date().toISOString().split('T')[0],
-      durationMinutes: calculateDurationMinutes(data.startTime, data.endTime),
+      durationMinutes,
       isLOPApplicable: count >= 3, // If already at 3 or more, mark as LOP
     };
 
@@ -254,8 +318,8 @@ export default function Permission({ onClose }: { onClose?: () => void }) {
                 </div>
 
                 <div className="pt-4">
-                  <Button type="submit" className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold shadow-[0_0_15px_rgba(6,182,212,0.3)]">
-                    Submit Permission Request
+                  <Button type="submit" disabled={loadingPermissionLimit || isSubmitting} className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-bold shadow-[0_0_15px_rgba(6,182,212,0.3)]">
+                    {loadingPermissionLimit ? 'Loading Permission Limit...' : 'Submit Permission Request'}
                   </Button>
                 </div>
               </form>
@@ -383,4 +447,3 @@ export default function Permission({ onClose }: { onClose?: () => void }) {
     </>
   );
 }
-

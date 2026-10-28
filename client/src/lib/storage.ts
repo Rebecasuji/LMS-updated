@@ -362,6 +362,25 @@ export async function getMonthlyPermissionCount(
   }
 }
 
+export async function getDailyPermissionMinutes(employeeId: string, date: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('permissions')
+    .select('permission_date, from_time, to_time, created_at')
+    .eq('user_id', employeeId)
+    .in('status', ['Pending', 'Approved']);
+
+  if (error) {
+    console.error('Error fetching daily permission duration:', error);
+    throw error;
+  }
+
+  return (data || []).reduce((total, permission: any) => {
+    const permissionDate = permission.permission_date || permission.created_at?.slice(0, 10);
+    if (permissionDate !== date) return total;
+    return total + calculateDurationMinutes(permission.from_time || '', permission.to_time || '');
+  }, 0);
+}
+
 export async function getStoredPermissions(): Promise<PermissionRequest[]> {
   try {
     const { data, error } = await supabase

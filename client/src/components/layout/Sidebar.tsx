@@ -147,14 +147,15 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         <div
           title={collapsed ? item.label : undefined}
           className={cn(
-            'group relative flex cursor-pointer items-center rounded-lg text-sm transition-colors',
-            collapsed ? 'justify-center px-0 py-2.5' : opts.nested ? 'gap-3 py-2 pl-3 pr-3' : 'gap-3 px-3 py-2.5',
+            'group relative flex cursor-pointer items-center rounded-lg transition-colors',
+            opts.nested ? 'text-[15px]' : 'text-base',
+            collapsed ? 'justify-center px-0 py-3' : opts.nested ? 'gap-3 py-2.5 pl-3 pr-3' : 'gap-3 px-4 py-3',
             active
               ? 'bg-white text-[#1A3DB1] font-semibold shadow-sm dark:bg-blue-500/20 dark:text-white'
               : 'text-white/75 hover:bg-white/10 hover:text-white dark:text-slate-400'
           )}
         >
-          <item.icon className={cn('h-[18px] w-[18px] shrink-0', active ? 'text-[#1A3DB1] dark:text-white' : 'text-white/70 group-hover:text-white dark:text-slate-400')} />
+          <item.icon className={cn('h-5 w-5 shrink-0', active ? 'text-[#1A3DB1] dark:text-white' : 'text-white/70 group-hover:text-white dark:text-slate-400')} />
           {!collapsed && <span className="truncate">{item.label}</span>}
         </div>
       </Link>
@@ -181,18 +182,18 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           onClick={() => toggleGroup(g.id)}
           aria-expanded={isOpen}
           className={cn(
-            'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+            'flex w-full items-center gap-3 rounded-lg px-4 py-3 text-base font-medium transition-colors',
             hasActive && !isOpen ? 'bg-white/15 text-white' : 'text-white/85 hover:bg-white/10 hover:text-white dark:text-slate-300'
           )}
         >
-          <g.icon className="h-[18px] w-[18px] shrink-0 text-white/80 dark:text-slate-400" />
+          <g.icon className="h-5 w-5 shrink-0 text-white/80 dark:text-slate-400" />
           <span className="flex-1 truncate text-left">{g.label}</span>
           <ChevronDown className={cn('h-4 w-4 shrink-0 text-white/60 transition-transform duration-200', isOpen && 'rotate-180')} />
         </button>
 
         <div className={cn('grid transition-[grid-template-rows] duration-200 ease-out', isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}>
           <div className="overflow-hidden">
-            <div className="ml-[21px] mt-1 space-y-0.5 border-l border-white/15 pl-3">
+            <div className="ml-5 mt-1 space-y-0.5 border-l border-white/15 pl-2">
               {g.items.map((i) => renderLink(i, { nested: true }))}
             </div>
           </div>

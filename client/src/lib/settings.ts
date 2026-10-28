@@ -96,6 +96,14 @@ export interface HolidaySettings {
   holidays: HolidayEntry[];
 }
 
+export interface PermissionSettings {
+  dailyLimitMinutes: number;
+}
+
+export const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = {
+  dailyLimitMinutes: 120,
+};
+
 export const DEFAULT_HOLIDAY_SETTINGS: HolidaySettings = {
   holidays: [
     { date: '2025-01-26', name: 'Republic Day' },
@@ -130,6 +138,7 @@ export const DEFAULT_HOLIDAY_SETTINGS: HolidaySettings = {
 const LEAVE_SETTINGS_LOCAL_KEY = 'knockturn_leave_settings';
 const SHIFT_SETTINGS_LOCAL_KEY = 'knockturn_shift_settings';
 const HOLIDAY_SETTINGS_LOCAL_KEY = 'knockturn_holiday_settings';
+const PERMISSION_SETTINGS_LOCAL_KEY = 'knockturn_permission_settings';
 
 // ============================================================================
 // API & CACHING HELPERS
@@ -271,6 +280,50 @@ export async function saveHolidaySettings(settings: HolidaySettings): Promise<bo
     }
   } catch (err) {
     console.error('[SETTINGS] Error saving holiday settings to API:', err);
+  }
+  return false;
+}
+
+export async function fetchPermissionSettings(): Promise<PermissionSettings> {
+  let cached = DEFAULT_PERMISSION_SETTINGS;
+  try {
+    const raw = localStorage.getItem(PERMISSION_SETTINGS_LOCAL_KEY);
+    if (raw) cached = { ...DEFAULT_PERMISSION_SETTINGS, ...JSON.parse(raw) };
+  } catch (err) {
+    console.warn('[SETTINGS] Failed to read cached permission settings:', err);
+  }
+
+  try {
+    const res = await fetch('/api/settings/permissions');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.settings) {
+        const settings = { ...DEFAULT_PERMISSION_SETTINGS, ...data.settings };
+        localStorage.setItem(PERMISSION_SETTINGS_LOCAL_KEY, JSON.stringify(settings));
+        return settings;
+      }
+    }
+  } catch (err) {
+    console.warn('[SETTINGS] Error fetching permission settings, using cached:', err);
+  }
+
+  return cached;
+}
+
+export async function savePermissionSettings(settings: PermissionSettings): Promise<boolean> {
+  localStorage.setItem(PERMISSION_SETTINGS_LOCAL_KEY, JSON.stringify(settings));
+  try {
+    const res = await fetch('/api/settings/permissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return !!data.success;
+    }
+  } catch (err) {
+    console.error('[SETTINGS] Error saving permission settings to API:', err);
   }
   return false;
 }
