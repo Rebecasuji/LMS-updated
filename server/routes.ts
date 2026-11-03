@@ -16,7 +16,7 @@ import crypto from "crypto";
 import { cliqService } from "./cliq";
 import { generateDailyAttendanceReport } from "./attendanceReport";
 import { checkAndRunScheduledReport, markDailyReportSent } from "./scheduler";
-import { getLeaveSettings, saveLeaveSettings, getShiftSettings, saveShiftSettings, getHolidaySettings, saveHolidaySettings, getPermissionSettings, savePermissionSettings } from "./settingsManager";
+import { getLeaveSettings, saveLeaveSettings, getODSettings, saveODSettings, validateODApplicationDates, getShiftSettings, saveShiftSettings, getHolidaySettings, saveHolidaySettings, getPermissionSettings, savePermissionSettings } from "./settingsManager";
 
 
 export async function registerRoutes(
@@ -117,6 +117,17 @@ export async function registerRoutes(
 
       if (!employeeId || !leave.startDate || !leave.endDate) {
         return res.status(400).json({ success: false, message: "Missing required fields" });
+      }
+
+      if (leave.type === 'OD') {
+        const odDateCheck = validateODApplicationDates(
+          leave.startDate,
+          leave.endDate,
+          await getODSettings()
+        );
+        if (!odDateCheck.valid) {
+          return res.status(400).json({ success: false, message: odDateCheck.message });
+        }
       }
 
       const isHourlyOdOrOt = leave.duration === 'Hourly' && (leave.type === 'OD' || leave.type === 'OT');
@@ -279,6 +290,8 @@ export async function registerRoutes(
           status: insertedLeave.status || 'Pending',
           reason: insertedLeave.reason,
           duration: insertedLeave.leave_duration_type,
+          fromTime: insertedLeave.od_from_time || insertedLeave.from_time,
+          toTime: insertedLeave.od_to_time || insertedLeave.to_time,
         }).catch((err) => console.error('[ZOHO-CLIQ] Failed to send leave notification:', err));
       }
 
@@ -736,6 +749,28 @@ export async function registerRoutes(
       res.json({ success: true, message: "Leave settings saved successfully", settings: await getLeaveSettings() });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err?.message || "Failed to save leave settings" });
+    }
+  });
+
+  app.get("/api/settings/od", async (_req, res) => {
+    try {
+      const settings = await getODSettings();
+      res.json({ success: true, settings });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "Failed to get OD settings" });
+    }
+  });
+
+  app.post("/api/settings/od", async (req, res) => {
+    try {
+      const settings = {
+        maxBackdatedDays: Number(req.body?.maxBackdatedDays),
+        minAdvanceDays: Number(req.body?.minAdvanceDays),
+      };
+      await saveODSettings(settings);
+      res.json({ success: true, message: "OD settings saved successfully", settings: await getODSettings() });
+    } catch (err: any) {
+      res.status(400).json({ success: false, message: err?.message || "Failed to save OD settings" });
     }
   });
 

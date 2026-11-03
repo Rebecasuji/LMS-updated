@@ -27,10 +27,15 @@ import {
 } from '@/components/ui/dialog';
 import {
   LeaveSettings,
+  ODSettings,
   DEFAULT_LEAVE_SETTINGS,
+  DEFAULT_OD_SETTINGS,
   fetchLeaveSettings,
+  fetchODSettings,
   getPermittedDateRange,
+  getODPermittedDateRange,
   validateLeaveDates,
+  validateODDates,
 } from '@/lib/settings';
 
 const leaveSchema = z.object({
@@ -92,9 +97,11 @@ export default function ApplyLeave() {
   const [isEmergencyPrivilege, setIsEmergencyPrivilege] = useState(false);
   const [emergencyReason, setEmergencyReason] = useState('');
   const [leaveSettings, setLeaveSettings] = useState<LeaveSettings>(DEFAULT_LEAVE_SETTINGS);
+  const [odSettings, setODSettings] = useState<ODSettings>(DEFAULT_OD_SETTINGS);
 
   useEffect(() => {
     fetchLeaveSettings().then(setLeaveSettings);
+    fetchODSettings().then(setODSettings);
   }, []);
 
   const getMinPrivilegeDateString = () => {
@@ -103,6 +110,7 @@ export default function ApplyLeave() {
   };
 
   const getStartDateMin = () => {
+    if (watchedLeaveType === 'OD') return getODPermittedDateRange(odSettings).minDate;
     const range = getPermittedDateRange(watchedLeaveType, leaveSettings, isEmergencyPrivilege);
     return range.minDate;
   };
@@ -222,13 +230,15 @@ export default function ApplyLeave() {
     }
 
     // Enforce dynamic admin leave settings (notice period, past dates, max future days)
-    const dateCheck = validateLeaveDates(
-      data.type,
-      data.startDate,
-      data.endDate,
-      leaveSettings,
-      isEmergencyPrivilege
-    );
+    const dateCheck = data.type === 'OD'
+      ? validateODDates(data.startDate, data.endDate, odSettings)
+      : validateLeaveDates(
+        data.type,
+        data.startDate,
+        data.endDate,
+        leaveSettings,
+        isEmergencyPrivilege
+      );
     if (!dateCheck.valid) {
       toast({
         title: "Date Policy Restriction",
@@ -580,6 +590,34 @@ export default function ApplyLeave() {
                 {form.formState.errors.endDate && <p className="text-red-400 text-xs">{form.formState.errors.endDate.message}</p>}
               </div>
             </div>
+
+            {watchedLeaveType === 'OD' && (() => {
+              const range = getODPermittedDateRange(odSettings);
+              return (
+                <div className="rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50/90 to-teal-50/70 p-4 text-xs text-emerald-950 space-y-2.5 shadow-sm">
+                  <div className="flex items-center gap-2 font-bold text-sm text-emerald-900 border-b border-emerald-200/70 pb-2">
+                    <CalendarDays className="w-4 h-4 text-emerald-600" />
+                    <span>On Duty (OD) Date Rules</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    <div className="bg-white/80 p-2.5 rounded-lg border border-emerald-100">
+                      <span className="font-semibold block text-emerald-900">Backdated OD:</span>
+                      <span className="text-slate-600">
+                        Up to <strong>{odSettings.maxBackdatedDays} day(s)</strong> in the past
+                        (earliest allowed: <strong>{range.minDate}</strong>).
+                      </span>
+                    </div>
+                    <div className="bg-white/80 p-2.5 rounded-lg border border-emerald-100">
+                      <span className="font-semibold block text-emerald-900">Future-Dated OD:</span>
+                      <span className="text-slate-600">
+                        Requires <strong>{odSettings.minAdvanceDays} day(s)</strong> advance notice
+                        (earliest future date: <strong>{range.earliestFutureDate}</strong>).
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* 1. Casual Leave Indication Card */}
             {watchedLeaveType === 'Casual' && (() => {

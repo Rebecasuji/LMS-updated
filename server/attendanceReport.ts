@@ -4,6 +4,12 @@ import { Pool } from 'pg';
 import { getEmployeeCutoffMinutes, getShiftSettings } from './settingsManager';
 
 const SHORT_HOURS_GRACE_MINUTES = 4;
+const PUNCH_TIME_UTC_SQL = `CASE
+  WHEN pg_typeof(a.punch_time) = 'timestamp with time zone'::regtype THEN a.punch_time
+  ELSE a.punch_time AT TIME ZONE 'Asia/Kolkata'
+END`;
+const IST_DAY_START_SQL = `($1::date::timestamp AT TIME ZONE 'Asia/Kolkata')`;
+const IST_DAY_END_SQL = `(($1::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'Asia/Kolkata')`;
 
 export interface AttendanceReportSummary {
   date: string;
@@ -283,6 +289,21 @@ async function analyzeDayHours(
     if (username) approvedLeaveCodes.add(username);
   });
 
+  const permissionEmployeeCodes = new Set<string>();
+  const { data: permissionsData, error: permissionsError } = await (db.from('permissions') as any)
+    .select('user_id, username')
+    .eq('permission_date', dateStr);
+  if (permissionsError) {
+    console.warn(`[ATTENDANCE-REPORT] Error querying permissions for ${dateStr}:`, permissionsError);
+  } else {
+    (permissionsData || []).forEach((permission: any) => {
+      const userId = (permission.user_id || '').trim().toUpperCase();
+      const username = (permission.username || '').trim().toUpperCase();
+      if (userId) permissionEmployeeCodes.add(userId);
+      if (username) permissionEmployeeCodes.add(username);
+    });
+  }
+
   const shortHours: NonNullable<AttendanceReportSummary['yesterday']>['shortHours'] = [];
   const incompletePunches: NonNullable<AttendanceReportSummary['yesterday']>['incompletePunches'] = [];
   const pool = getPayrollPool();
@@ -293,7 +314,7 @@ async function analyzeDayHours(
         SELECT
           a.emp_code,
           COALESCE(e.name, a.emp_code) as name,
-          a.punch_time AT TIME ZONE 'Asia/Kolkata' as punch_time,
+          ${PUNCH_TIME_UTC_SQL} as punch_time,
           a.punch_state
         FROM attendance_logs a
         LEFT JOIN LATERAL (
@@ -303,8 +324,8 @@ async function analyzeDayHours(
           ORDER BY employee.created_at DESC NULLS LAST, employee.id
           LIMIT 1
         ) e ON TRUE
-        WHERE a.punch_time >= $1::date
-          AND a.punch_time < ($1::date + INTERVAL '1 day')
+        WHERE ${PUNCH_TIME_UTC_SQL} >= ${IST_DAY_START_SQL}
+          AND ${PUNCH_TIME_UTC_SQL} < ${IST_DAY_END_SQL}
         ORDER BY a.punch_time ASC;
       `;
       const result = await pool.query(queryText, [dateStr]);
@@ -313,7 +334,12 @@ async function analyzeDayHours(
       result.rows.forEach((row: any) => {
         const code = (row.emp_code || '').trim().toUpperCase();
         const punchTime = new Date(row.punch_time);
-        if (!code || approvedLeaveCodes.has(code) || getISTDate(punchTime) !== dateStr) return;
+        if (
+          !code ||
+          approvedLeaveCodes.has(code) ||
+          permissionEmployeeCodes.has(code) ||
+          getISTDate(punchTime) !== dateStr
+        ) return;
         const dbName = (row.name || '').trim();
         const name = userMap[code] || (dbName && dbName.toUpperCase() !== code ? dbName : code);
         if (!punchesByEmployee[code]) punchesByEmployee[code] = [];
@@ -534,6 +560,7 @@ export async function generateDailyAttendanceReport(
 
     const permissionsToday: AttendanceReportSummary['permissionsToday'] = [];
     const approvedLateEntryCodes = new Set<string>();
+    const lateEntryPermissionRequestCodes = new Set<string>();
 
     (permissionsData || []).forEach((p: any) => {
       const permissionDate = p.permission_date ? String(p.permission_date) : '';
@@ -553,8 +580,11 @@ export async function generateDailyAttendanceReport(
       const toTime = formatTimeTo12Hour(p.to_time);
       const timeRange = fromTime && toTime ? `${fromTime} - ${toTime}` : (fromTime || 'Official Hours');
 
-      if (isApproved && (p.permission_type === 'late_entry' || permType.toLowerCase().includes('late entry'))) {
-        if (code) approvedLateEntryCodes.add(code);
+      if (p.permission_type === 'late_entry' || permType.toLowerCase().includes('late entry')) {
+        if (code) {
+          lateEntryPermissionRequestCodes.add(code);
+          if (isApproved) approvedLateEntryCodes.add(code);
+        }
       }
 
       permissionsToday.push({
@@ -582,7 +612,7 @@ export async function generateDailyAttendanceReport(
           SELECT 
             a.emp_code,
             COALESCE(e.name, a.emp_code) as name,
-            a.punch_time AT TIME ZONE 'Asia/Kolkata' as punch_time,
+            ${PUNCH_TIME_UTC_SQL} as punch_time,
             a.punch_state
           FROM attendance_logs a
           LEFT JOIN LATERAL (
@@ -592,8 +622,8 @@ export async function generateDailyAttendanceReport(
             ORDER BY employee.created_at DESC NULLS LAST, employee.id
             LIMIT 1
           ) e ON TRUE
-          WHERE a.punch_time >= $1::date
-            AND a.punch_time < ($1::date + INTERVAL '1 day')
+          WHERE ${PUNCH_TIME_UTC_SQL} >= ${IST_DAY_START_SQL}
+            AND ${PUNCH_TIME_UTC_SQL} < ${IST_DAY_END_SQL}
           ORDER BY a.punch_time ASC;
         `;
         const res = await pool.query(queryText, [dateStr]);
@@ -645,13 +675,14 @@ export async function generateDailyAttendanceReport(
       // Check if employee has On-Duty (OD) or Approved Late Entry Permission
       const isOnDuty = approvedOdEmployeeCodes.has(empCode);
       const hasLateEntryPerm = approvedLateEntryCodes.has(empCode);
+      const hasLateEntryPermissionRequest = lateEntryPermissionRequestCodes.has(empCode);
 
       // Latecomers check: Evaluate based on employee's configured shift cutoff
       // Exclude employees on OD (they are on duty) and employees with approved late entry permission
       const { cutoffMinutes: empCutoffMinutes } = await getEmployeeCutoffMinutes(empCode, empName);
       const effectiveCutoff = empCutoffMinutes || officeStartMinutes;
       const isOnApprovedLeave = approvedLeaveEmployeeCodes.has(empCode);
-      const delay = firstPunchMinutes > effectiveCutoff && !isOnDuty && !hasLateEntryPerm && !isOnApprovedLeave
+      const delay = firstPunchMinutes > effectiveCutoff && !isOnDuty && !hasLateEntryPermissionRequest && !isOnApprovedLeave
         ? firstPunchMinutes - effectiveCutoff
         : 0;
 

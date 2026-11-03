@@ -100,6 +100,16 @@ export interface PermissionSettings {
   dailyLimitMinutes: number;
 }
 
+export interface ODSettings {
+  maxBackdatedDays: number;
+  minAdvanceDays: number;
+}
+
+export const DEFAULT_OD_SETTINGS: ODSettings = {
+  maxBackdatedDays: 3650,
+  minAdvanceDays: 0,
+};
+
 export const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = {
   dailyLimitMinutes: 120,
 };
@@ -139,6 +149,7 @@ const LEAVE_SETTINGS_LOCAL_KEY = 'knockturn_leave_settings';
 const SHIFT_SETTINGS_LOCAL_KEY = 'knockturn_shift_settings';
 const HOLIDAY_SETTINGS_LOCAL_KEY = 'knockturn_holiday_settings';
 const PERMISSION_SETTINGS_LOCAL_KEY = 'knockturn_permission_settings';
+const OD_SETTINGS_LOCAL_KEY = 'knockturn_od_settings';
 
 // ============================================================================
 // API & CACHING HELPERS
@@ -189,6 +200,51 @@ export async function saveLeaveSettings(settings: LeaveSettings): Promise<boolea
     }
   } catch (err) {
     console.error('[SETTINGS] Error saving leave settings to API:', err);
+  }
+  return false;
+}
+
+export async function fetchODSettings(): Promise<ODSettings> {
+  let cached = DEFAULT_OD_SETTINGS;
+  try {
+    const raw = localStorage.getItem(OD_SETTINGS_LOCAL_KEY);
+    if (raw) cached = { ...DEFAULT_OD_SETTINGS, ...JSON.parse(raw) };
+  } catch (err) {
+    console.warn('[SETTINGS] Failed to read cached OD settings:', err);
+  }
+
+  try {
+    const res = await fetch('/api/settings/od');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.settings) {
+        const merged = { ...DEFAULT_OD_SETTINGS, ...data.settings };
+        localStorage.setItem(OD_SETTINGS_LOCAL_KEY, JSON.stringify(merged));
+        return merged;
+      }
+    }
+  } catch (err) {
+    console.warn('[SETTINGS] Error fetching OD settings from API, using cached:', err);
+  }
+
+  return cached;
+}
+
+export async function saveODSettings(settings: ODSettings): Promise<boolean> {
+  localStorage.setItem(OD_SETTINGS_LOCAL_KEY, JSON.stringify(settings));
+
+  try {
+    const res = await fetch('/api/settings/od', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return !!data.success;
+    }
+  } catch (err) {
+    console.error('[SETTINGS] Error saving OD settings to API:', err);
   }
   return false;
 }
@@ -337,6 +393,64 @@ function toDateString(d: Date): string {
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+export function getODPermittedDateRange(settings: ODSettings): {
+  minDate: string;
+  earliestFutureDate: string;
+} {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const earliestBackdated = new Date(today);
+  earliestBackdated.setDate(earliestBackdated.getDate() - settings.maxBackdatedDays);
+
+  const earliestFuture = new Date(today);
+  earliestFuture.setDate(earliestFuture.getDate() + settings.minAdvanceDays);
+
+  return {
+    minDate: toDateString(earliestBackdated),
+    earliestFutureDate: toDateString(earliestFuture),
+  };
+}
+
+export function validateODDates(
+  startDateStr: string,
+  endDateStr: string,
+  settings: ODSettings
+): { valid: boolean; error?: string } {
+  if (!startDateStr || !endDateStr) {
+    return { valid: false, error: 'Start date and end date are required.' };
+  }
+  const isValidDate = (value: string) =>
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    toDateString(new Date(`${value}T00:00:00`)) === value;
+  if (!isValidDate(startDateStr) || !isValidDate(endDateStr)) {
+    return { valid: false, error: 'Enter valid OD start and end dates.' };
+  }
+
+  const startDate = new Date(`${startDateStr}T00:00:00`);
+  const endDate = new Date(`${endDateStr}T00:00:00`);
+  if (endDate < startDate) {
+    return { valid: false, error: 'End date cannot be earlier than start date.' };
+  }
+
+  const today = toDateString(new Date());
+  const range = getODPermittedDateRange(settings);
+  if (startDateStr < today && startDateStr < range.minDate) {
+    return {
+      valid: false,
+      error: `Backdated OD can only be applied up to ${settings.maxBackdatedDays} day(s) in the past. Earliest date allowed is ${range.minDate}.`,
+    };
+  }
+  if (startDateStr > today && startDateStr < range.earliestFutureDate) {
+    return {
+      valid: false,
+      error: `Future-dated OD must be applied at least ${settings.minAdvanceDays} day(s) in advance. Earliest date allowed is ${range.earliestFutureDate}.`,
+    };
+  }
+
+  return { valid: true };
 }
 
 export function getPermittedDateRange(

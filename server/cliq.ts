@@ -302,6 +302,8 @@ class ZohoCliqService {
     status: string;
     reason?: string;
     duration?: string;
+    fromTime?: string;
+    toTime?: string;
   }): Promise<boolean> {
     const dedupeKey = `leave_notif_${leave.id || `${leave.employeeName}_${leave.startDate}_${leave.leaveType}`}`;
     if (sentEventsCache.has(dedupeKey)) {
@@ -313,6 +315,9 @@ class ZohoCliqService {
     const isOt = (leave.leaveType || '').toUpperCase() === 'OT' || (leave.leaveType || '').toUpperCase().includes('OVERTIME');
     const applicationDate = leave.appliedDate || new Date().toISOString().split('T')[0];
     const durationText = leave.duration ? ` (${leave.duration})` : '';
+    const timeRange = leave.fromTime && leave.toTime
+      ? `**${isOd ? 'OD' : 'OT'} Timing:** ${leave.fromTime.slice(0, 5)} to ${leave.toTime.slice(0, 5)}`
+      : '';
 
     const titleHeader = isOd 
       ? `💼 **New On-Duty (OD) Application Submitted**`
@@ -328,6 +333,7 @@ class ZohoCliqService {
       `**Employee:** ${leave.employeeName}`,
       `**Type:** ${leave.leaveType}${durationText}`,
       `**Duration:** ${leave.startDate} to ${leave.endDate}`,
+      timeRange,
       `**Application Date:** ${applicationDate}`,
       `**Current Status:** 🟡 ${leave.status || 'Pending'}`,
       leave.reason ? `**Reason:** ${leave.reason}` : '',

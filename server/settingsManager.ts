@@ -18,6 +18,11 @@ export interface LeaveSettings {
   sick: LeaveTypeRule;
 }
 
+export interface ODSettings {
+  maxBackdatedDays: number;
+  minAdvanceDays: number;
+}
+
 export interface ShiftDefinition {
   id: string;
   name: string;
@@ -62,6 +67,11 @@ export const DEFAULT_LEAVE_SETTINGS: LeaveSettings = {
   },
 };
 
+export const DEFAULT_OD_SETTINGS: ODSettings = {
+  maxBackdatedDays: 3650,
+  minAdvanceDays: 0,
+};
+
 export const DEFAULT_SHIFT_SETTINGS: ShiftSettings = {
   defaultShiftId: 'shift_1000',
   shifts: [
@@ -102,6 +112,7 @@ if (!fs.existsSync(DATA_DIR)) {
 
 const LEAVE_SETTINGS_FILE = path.join(DATA_DIR, 'leave_settings.json');
 const SHIFT_SETTINGS_FILE = path.join(DATA_DIR, 'shift_settings.json');
+const OD_SETTINGS_FILE = path.join(DATA_DIR, 'od_settings.json');
 
 let pool: pg.Pool | null = null;
 function getPool(): pg.Pool | null {
@@ -123,6 +134,7 @@ function getPool(): pg.Pool | null {
 // In-memory cache
 let cachedLeaveSettings: LeaveSettings | null = null;
 let cachedShiftSettings: ShiftSettings | null = null;
+let cachedODSettings: ODSettings | null = null;
 
 // ============================================================================
 // LEAVE SETTINGS
@@ -199,6 +211,136 @@ export async function saveLeaveSettings(settings: LeaveSettings): Promise<boolea
   }
 
   return true;
+}
+
+function normalizeODSettings(settings: Partial<ODSettings>): ODSettings {
+  const maxBackdatedDays = settings.maxBackdatedDays;
+  const minAdvanceDays = settings.minAdvanceDays;
+
+  return {
+    maxBackdatedDays: Number.isInteger(maxBackdatedDays) && maxBackdatedDays! >= 0 && maxBackdatedDays! <= 3650
+      ? maxBackdatedDays!
+      : DEFAULT_OD_SETTINGS.maxBackdatedDays,
+    minAdvanceDays: Number.isInteger(minAdvanceDays) && minAdvanceDays! >= 0 && minAdvanceDays! <= 3650
+      ? minAdvanceDays!
+      : DEFAULT_OD_SETTINGS.minAdvanceDays,
+  };
+}
+
+export async function getODSettings(): Promise<ODSettings> {
+  if (cachedODSettings) return cachedODSettings;
+
+  const dbPool = getPool();
+  if (dbPool) {
+    try {
+      const res = await dbPool.query("SELECT value FROM settings WHERE key = 'lms_od_settings' LIMIT 1");
+      if (res.rows.length > 0 && res.rows[0].value) {
+        cachedODSettings = normalizeODSettings(JSON.parse(res.rows[0].value));
+        return cachedODSettings;
+      }
+    } catch (err: any) {
+      console.warn('[SETTINGS] DB query for OD settings failed, falling back:', err.message);
+    }
+  }
+
+  try {
+    if (fs.existsSync(OD_SETTINGS_FILE)) {
+      cachedODSettings = normalizeODSettings(JSON.parse(fs.readFileSync(OD_SETTINGS_FILE, 'utf-8')));
+      return cachedODSettings;
+    }
+  } catch (err: any) {
+    console.warn('[SETTINGS] File read for OD settings failed:', err.message);
+  }
+
+  cachedODSettings = { ...DEFAULT_OD_SETTINGS };
+  return cachedODSettings;
+}
+
+export async function saveODSettings(settings: ODSettings): Promise<boolean> {
+  if (
+    !Number.isInteger(settings.maxBackdatedDays) ||
+    settings.maxBackdatedDays < 0 ||
+    settings.maxBackdatedDays > 3650 ||
+    !Number.isInteger(settings.minAdvanceDays) ||
+    settings.minAdvanceDays < 0 ||
+    settings.minAdvanceDays > 3650
+  ) {
+    throw new Error('OD date limits must be whole numbers between 0 and 3650 days.');
+  }
+
+  cachedODSettings = { ...settings };
+  try {
+    fs.writeFileSync(OD_SETTINGS_FILE, JSON.stringify(cachedODSettings, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[SETTINGS] Failed to write OD settings to file:', err);
+  }
+
+  const dbPool = getPool();
+  if (dbPool) {
+    try {
+      const jsonStr = JSON.stringify(cachedODSettings);
+      const existing = await dbPool.query("SELECT id FROM settings WHERE key = 'lms_od_settings' LIMIT 1");
+      if (existing.rows.length > 0) {
+        await dbPool.query("UPDATE settings SET value = $1, updated_at = NOW() WHERE key = 'lms_od_settings'", [jsonStr]);
+      } else {
+        await dbPool.query(
+          "INSERT INTO settings (id, key, value, created_at, updated_at) VALUES (gen_random_uuid(), 'lms_od_settings', $1, NOW(), NOW())",
+          [jsonStr]
+        );
+      }
+    } catch (err: any) {
+      console.error('[SETTINGS] DB save for OD settings failed:', err.message);
+    }
+  }
+
+  return true;
+}
+
+function localDateString(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+export function validateODApplicationDates(
+  startDate: string,
+  endDate: string,
+  settings: ODSettings
+): { valid: boolean; message?: string } {
+  const isValidDate = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const parsed = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  };
+
+  if (!isValidDate(startDate) || !isValidDate(endDate)) {
+    return { valid: false, message: 'Enter valid OD start and end dates.' };
+  }
+  if (endDate < startDate) {
+    return { valid: false, message: 'End date cannot be earlier than start date.' };
+  }
+
+  const today = localDateString(new Date());
+  const earliestBackdated = new Date(`${today}T00:00:00`);
+  earliestBackdated.setDate(earliestBackdated.getDate() - settings.maxBackdatedDays);
+  const earliestBackdatedString = localDateString(earliestBackdated);
+
+  const earliestFuture = new Date(`${today}T00:00:00`);
+  earliestFuture.setDate(earliestFuture.getDate() + settings.minAdvanceDays);
+  const earliestFutureString = localDateString(earliestFuture);
+
+  if (startDate < today && startDate < earliestBackdatedString) {
+    return {
+      valid: false,
+      message: `Backdated OD can only be applied up to ${settings.maxBackdatedDays} day(s) in the past. Earliest date allowed is ${earliestBackdatedString}.`,
+    };
+  }
+  if (startDate > today && startDate < earliestFutureString) {
+    return {
+      valid: false,
+      message: `Future-dated OD must be applied at least ${settings.minAdvanceDays} day(s) in advance. Earliest date allowed is ${earliestFutureString}.`,
+    };
+  }
+
+  return { valid: true };
 }
 
 // ============================================================================

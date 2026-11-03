@@ -32,12 +32,16 @@ import {
   HolidaySettings,
   HolidayEntry,
   PermissionSettings,
+  ODSettings,
   DEFAULT_LEAVE_SETTINGS,
   DEFAULT_SHIFT_SETTINGS,
   DEFAULT_HOLIDAY_SETTINGS,
   DEFAULT_PERMISSION_SETTINGS,
+  DEFAULT_OD_SETTINGS,
   fetchLeaveSettings,
   saveLeaveSettings,
+  fetchODSettings,
+  saveODSettings,
   fetchShiftSettings,
   saveShiftSettings,
   fetchHolidaySettings,
@@ -56,6 +60,8 @@ export default function LeaveSettingsPage() {
   // Leave Settings State
   const [leaveSettings, setLeaveSettings] = useState<LeaveSettings>(DEFAULT_LEAVE_SETTINGS);
   const [savingLeave, setSavingLeave] = useState(false);
+  const [odSettings, setODSettings] = useState<ODSettings>(DEFAULT_OD_SETTINGS);
+  const [savingOD, setSavingOD] = useState(false);
 
   const [permissionSettings, setPermissionSettings] = useState<PermissionSettings>(DEFAULT_PERMISSION_SETTINGS);
   const [savingPermissions, setSavingPermissions] = useState(false);
@@ -82,14 +88,16 @@ export default function LeaveSettingsPage() {
     async function load() {
       setLoading(true);
       try {
-        const [ls, ps, ss, hs, emps] = await Promise.all([
+        const [ls, ods, ps, ss, hs, emps] = await Promise.all([
           fetchLeaveSettings(),
+          fetchODSettings(),
           fetchPermissionSettings(),
           fetchShiftSettings(),
           fetchHolidaySettings(),
           getAllUsersAsync(),
         ]);
         setLeaveSettings(ls);
+        setODSettings(ods);
         setPermissionSettings(ps);
         setShiftSettings(ss);
         setHolidaySettings(hs);
@@ -128,6 +136,33 @@ export default function LeaveSettingsPage() {
       });
     } finally {
       setSavingLeave(false);
+    }
+  };
+
+  const handleSaveODSettings = async () => {
+    setSavingOD(true);
+    try {
+      const ok = await saveODSettings(odSettings);
+      if (ok) {
+        toast({
+          title: '✅ OD Rules Saved',
+          description: 'Backdated and future-dated OD application limits have been updated.',
+          className: 'bg-emerald-500 text-white border-none',
+        });
+      } else {
+        toast({
+          title: 'Notice',
+          description: 'OD settings saved locally. Server sync may take a moment.',
+        });
+      }
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: err?.message || 'Failed to save OD settings.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingOD(false);
     }
   };
 
@@ -730,6 +765,97 @@ export default function LeaveSettingsPage() {
               {savingLeave ? 'Saving Rules...' : 'Save Leave Rules'}
             </Button>
           </div>
+
+          <section className="space-y-4 border-t border-slate-200 pt-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">OD (On Duty) Settings</h2>
+                <p className="text-sm text-slate-600">
+                  Configure date limits specifically for On Duty requests. These rules do not change PL or CL settings.
+                </p>
+              </div>
+              <Button
+                onClick={handleSaveODSettings}
+                disabled={savingOD}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold flex items-center gap-2 shrink-0"
+              >
+                {savingOD ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {savingOD ? 'Saving...' : 'Save OD Rules'}
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <Card className="border-emerald-200 shadow-sm relative overflow-hidden bg-gradient-to-b from-emerald-50/40 to-white">
+                <div className="absolute top-0 left-0 right-0 h-1.5 bg-emerald-500" />
+                <CardHeader className="pb-3">
+                  <Badge className="w-fit bg-emerald-100 text-emerald-800 border-emerald-300 font-bold">
+                    Backdated OD
+                  </Badge>
+                  <CardTitle className="text-xl font-bold text-slate-900">Backdated OD Applications</CardTitle>
+                  <CardDescription>
+                    Set how far in the past employees may apply for On Duty.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <Label htmlFor="od-max-backdated-days">Maximum Backdating Period (Days)</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="od-max-backdated-days"
+                      type="number"
+                      min={0}
+                      max={3650}
+                      step={1}
+                      value={odSettings.maxBackdatedDays}
+                      onChange={(e) => setODSettings({
+                        ...odSettings,
+                        maxBackdatedDays: Math.min(3650, Math.max(0, parseInt(e.target.value, 10) || 0)),
+                      })}
+                      className="bg-white border-slate-300 font-semibold text-slate-900"
+                    />
+                    <span className="text-xs text-slate-500 shrink-0">days in the past</span>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Set to 0 to allow OD applications for today only, with no backdating.
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card className="border-violet-200 shadow-sm relative overflow-hidden bg-gradient-to-b from-violet-50/40 to-white">
+                <div className="absolute top-0 left-0 right-0 h-1.5 bg-violet-500" />
+                <CardHeader className="pb-3">
+                  <Badge className="w-fit bg-violet-100 text-violet-800 border-violet-300 font-bold">
+                    Future-Dated OD
+                  </Badge>
+                  <CardTitle className="text-xl font-bold text-slate-900">Future-Dated OD Applications</CardTitle>
+                  <CardDescription>
+                    Require employees to submit future On Duty requests in advance.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <Label htmlFor="od-min-advance-days">Minimum Advance Notice (Days)</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="od-min-advance-days"
+                      type="number"
+                      min={0}
+                      max={3650}
+                      step={1}
+                      value={odSettings.minAdvanceDays}
+                      onChange={(e) => setODSettings({
+                        ...odSettings,
+                        minAdvanceDays: Math.min(3650, Math.max(0, parseInt(e.target.value, 10) || 0)),
+                      })}
+                      className="bg-white border-slate-300 font-semibold text-slate-900"
+                    />
+                    <span className="text-xs text-slate-500 shrink-0">days in advance</span>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Future OD dates must be at least this many days ahead. Set to 0 to require no advance notice.
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+          </section>
         </TabsContent>
 
         <TabsContent value="permissions" className="space-y-6 pt-4">
