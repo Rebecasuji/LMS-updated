@@ -68,6 +68,10 @@ app.use((req, res, next) => {
     const { startScheduler } = await import("./scheduler");
     startScheduler();
 
+    // Initialize the independent missing punch-out reminder workflow
+    const { startMissingPunchOutReminderScheduler } = await import("./missingPunchOutReminder");
+    startMissingPunchOutReminderScheduler();
+
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;
       const message = err.message || "Internal Server Error";

@@ -5,7 +5,7 @@ export interface EmailNotification {
   to: string[];
   subject: string;
   html: string;
-  type: "leave" | "permission" | "reset";
+  type: "leave" | "permission" | "reset" | "missing_punch_out";
 }
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
@@ -46,6 +46,10 @@ export async function sendEmailNotification(notification: EmailNotification): Pr
     }
 
     if (!resendClient) {
+      if (notification.type === "missing_punch_out") {
+        console.error("[EMAIL] Cannot send missing punch-out reminder without RESEND_API_KEY");
+        return false;
+      }
       console.log(`[EMAIL] (dry-run) Would send ${notification.type} email to: ${toRecipients.join(", ")}`);
       console.log(`[EMAIL] Subject: ${notification.subject}`);
       return true;
@@ -74,6 +78,11 @@ export async function sendEmailNotification(notification: EmailNotification): Pr
       } catch (e) {
         console.error('[EMAIL] Retry with VERIFIED_FROM_EMAIL failed:', e);
       }
+    }
+
+    if (notification.type === "missing_punch_out" && resp && resp.error) {
+      console.error("[EMAIL] Resend rejected missing punch-out reminder:", resp.error);
+      return false;
     }
 
     console.log(`[EMAIL] Sent ${notification.type} email to ${toRecipients.join(", ")}`);
