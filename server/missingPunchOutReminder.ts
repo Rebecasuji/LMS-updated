@@ -351,11 +351,6 @@ export async function checkAndSendMissingPunchOutReminders(now = new Date()): Pr
     const employeePunchEntries = Array.from(punchesByEmployee.entries());
     for (let entryIndex = 0; entryIndex < employeePunchEntries.length; entryIndex += 1) {
       const [employeeCode, punches] = employeePunchEntries[entryIndex];
-      const employee = contacts.get(employeeCode);
-      if (!employee) {
-        console.warn(`[MISSING-PUNCH-OUT] No active LMS employee email found for ${employeeCode}; skipping.`);
-        continue;
-      }
 
       for (const attendanceDate of targetDates) {
         const weekday = new Date(`${attendanceDate}T00:00:00.000Z`).getUTCDay();
@@ -370,6 +365,12 @@ export async function checkAndSendMissingPunchOutReminders(now = new Date()): Pr
         if (!missingPunchIn) continue;
 
         checked += 1;
+        const employee = contacts.get(employeeCode);
+        if (!employee) {
+          console.warn(`[MISSING-PUNCH-OUT] Missing Punch-Out found for ${employeeCode} on ${attendanceDate}, but no active LMS employee email was found; skipping email.`);
+          continue;
+        }
+
         const normalizedName = employee.name.toUpperCase();
         const resolvedEmployee = normalizedName === employee.code || normalizedName === employeeCode
           ? { ...employee, name: punches[0].payrollName || employee.name }
