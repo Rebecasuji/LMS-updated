@@ -182,9 +182,24 @@ async function getEmployeeContacts(): Promise<Map<string, EmployeeContact>> {
 
   const { data, error } = await supabaseServer
     .from('users')
-    .select('user_id, username, name, email, role, is_active');
+    .select('user_id, username, email, role, is_active');
   if (error) {
     throw new Error(`Could not load employee email addresses: ${error.message}`);
+  }
+
+  const { data: employees, error: employeesError } = await supabaseServer
+    .from('employees')
+    .select('employee_code, name');
+
+  const namesByCode = new Map<string, string>();
+  if (employeesError) {
+    console.warn(`[MISSING-PUNCH-OUT] Could not load employee names; using username fallback: ${employeesError.message}`);
+  } else {
+    (employees || []).forEach((employee: any) => {
+      const code = (employee.employee_code || '').trim().toUpperCase();
+      const name = (employee.name || '').trim();
+      if (code && name) namesByCode.set(code, name);
+    });
   }
 
   const contacts = new Map<string, EmployeeContact>();
@@ -197,7 +212,7 @@ async function getEmployeeContacts(): Promise<Map<string, EmployeeContact>> {
 
     const contact = {
       code,
-      name: (user.name || user.username || code).trim(),
+      name: namesByCode.get(code) || (user.username || code).trim(),
       email,
     };
     contacts.set(code, contact);
