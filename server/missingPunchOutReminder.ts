@@ -14,6 +14,7 @@ END`;
 interface PunchRecord {
   employeeCode: string;
   payrollName: string;
+  payrollEmail: string;
   punchTime: Date;
   punchState: string;
 }
@@ -85,28 +86,43 @@ function getPunchDate(punchTime: Date): string {
 
 function classifyPunchState(state: string): 'in' | 'out' | 'unknown' {
   const normalized = state.trim().toUpperCase().replace(/[_-]+/g, ' ');
-  if (['IN', 'PUNCH IN', 'CHECK IN', 'CHECKIN', '0'].includes(normalized)) return 'in';
-  if (['OUT', 'PUNCH OUT', 'CHECK OUT', 'CHECKOUT', '1'].includes(normalized)) return 'out';
+  if (['IN', 'PUNCH IN', 'CHECK IN', 'CHECKIN'].includes(normalized)) return 'in';
+  if (['OUT', 'PUNCH OUT', 'CHECK OUT', 'CHECKOUT'].includes(normalized)) return 'out';
   return 'unknown';
 }
 
 function findUnmatchedPunchIn(punches: PunchRecord[], attendanceDate: string): PunchRecord | null {
-  let openPunch: PunchRecord | null = null;
+  const seenPunches = new Set<string>();
+  const uniquePunches = punches.filter((punch) => {
+    const state = punch.punchState.trim().toUpperCase();
+    const timestamp = ['IN', 'OUT'].includes(state)
+      ? punch.punchTime.getTime()
+      : Math.floor(punch.punchTime.getTime() / 60000);
+    const key = `${timestamp}|${state}`;
+    if (seenPunches.has(key)) return false;
+    seenPunches.add(key);
+    return true;
+  });
+  const datePunches = uniquePunches.filter((punch) => getPunchDate(punch.punchTime) === attendanceDate);
+  if (datePunches.length === 0) return null;
 
-  for (const punch of punches) {
-    const state = classifyPunchState(punch.punchState);
-    if (state === 'in') {
-      openPunch = punch;
-    } else if (state === 'out') {
-      if (openPunch) openPunch = null;
-    } else if (openPunch) {
-      openPunch = null;
-    } else {
-      openPunch = punch;
+  const recognizedStates = uniquePunches.map((punch) => classifyPunchState(punch.punchState));
+  if (recognizedStates.every((state) => state !== 'unknown')) {
+    let openPunch: PunchRecord | null = null;
+    for (let index = 0; index < uniquePunches.length; index += 1) {
+      const punch = uniquePunches[index];
+      const state = recognizedStates[index];
+      if (state === 'in' && !openPunch) openPunch = punch;
+      else if (state === 'out' && openPunch) openPunch = null;
     }
+    return openPunch && getPunchDate(openPunch.punchTime) === attendanceDate ? openPunch : null;
   }
 
-  return openPunch && getPunchDate(openPunch.punchTime) === attendanceDate ? openPunch : null;
+  // Payroll's numeric punch_state values are direction-device specific. Match
+  // the existing attendance report's first/last punch pairing instead.
+  const followingDate = shiftDate(attendanceDate, 1);
+  const hasOvernightPunchOut = uniquePunches.some((punch) => getPunchDate(punch.punchTime) === followingDate);
+  return datePunches.length === 1 && !hasOvernightPunchOut ? datePunches[0] : null;
 }
 
 function formatAttendanceDate(date: string): string {
@@ -189,9 +205,10 @@ async function getEmployeeContacts(): Promise<Map<string, EmployeeContact>> {
 
   const { data: employees, error: employeesError } = await supabaseServer
     .from('employees')
-    .select('employee_code, name');
+    .select('*');
 
   const namesByCode = new Map<string, string>();
+  const contacts = new Map<string, EmployeeContact>();
   if (employeesError) {
     console.warn(`[MISSING-PUNCH-OUT] Could not load employee names; using username fallback: ${employeesError.message}`);
   } else {
@@ -199,24 +216,44 @@ async function getEmployeeContacts(): Promise<Map<string, EmployeeContact>> {
       const code = (employee.employee_code || '').trim().toUpperCase();
       const name = (employee.name || '').trim();
       if (code && name) namesByCode.set(code, name);
+      if (!code || employee.is_active === false) return;
+      const email = [
+        employee.email,
+        employee.email_address,
+        employee.official_email,
+        employee.work_email,
+        employee.company_email,
+      ].find((value) => typeof value === 'string' && value.trim());
+      if (email) {
+        contacts.set(code, { code, name: name || code, email: email.trim() });
+      }
     });
   }
 
-  const contacts = new Map<string, EmployeeContact>();
   (data || []).forEach((user: any) => {
-    if ((user.role || '').trim().toLowerCase() !== 'employee' || user.is_active === false) return;
-    const email = (user.email || '').trim();
-    if (!email) return;
-    const code = (user.user_id || user.username || '').trim().toUpperCase();
+    if ((user.role || '').trim().toLowerCase() !== 'employee') return;
+    const userId = (user.user_id || '').trim().toUpperCase();
+    const username = (user.username || '').trim().toUpperCase();
+    const code = userId || username;
     if (!code) return;
+    if (user.is_active === false) {
+      contacts.delete(userId);
+      contacts.delete(username);
+      return;
+    }
 
-    const contact = {
+    const existing = contacts.get(userId) || contacts.get(username);
+    const email = (user.email || '').trim() || existing?.email || '';
+    if (!email) return;
+
+    const contact: EmployeeContact = {
       code,
-      name: namesByCode.get(code) || (user.username || code).trim(),
+      name: namesByCode.get(userId) || namesByCode.get(username) ||
+        existing?.name || (user.username || code).trim(),
       email,
     };
     contacts.set(code, contact);
-    const username = (user.username || '').trim().toUpperCase();
+    if (userId) contacts.set(userId, contact);
     if (username) contacts.set(username, contact);
   });
   return contacts;
@@ -241,6 +278,33 @@ function shouldDeferForOvernightShift(
   if (current.date < endOnNextDate) return true;
   if (current.date > endOnNextDate) return false;
   return current.minutes < end + (shift.graceMinutes || 0);
+}
+
+function getPunchesForAttendanceDate(
+  punches: PunchRecord[],
+  employeeCode: string,
+  attendanceDate: string,
+  now: Date,
+  shifts: Awaited<ReturnType<typeof getShiftSettings>>,
+): PunchRecord[] {
+  const shiftId = shifts.employeeShifts[employeeCode] || shifts.defaultShiftId;
+  const shift = shifts.shifts.find((item) => item.id === shiftId);
+  if (!shift) {
+    return punches.filter((punch) => getPunchDate(punch.punchTime) === attendanceDate);
+  }
+
+  const start = parseTimeToMinutes(shift.startTime);
+  const end = parseTimeToMinutes(shift.endTime);
+  const overnight = start > end;
+  const followingDate = shiftDate(attendanceDate, 1);
+  const latestOvernightPunch = end + (shift.graceMinutes || 0);
+
+  return punches.filter((punch) => {
+    const punchDateTime = getLocalDateTime(punch.punchTime, TIME_ZONE);
+    if (punchDateTime.date === attendanceDate) return true;
+    if (!overnight || punchDateTime.date !== followingDate) return false;
+    return punchDateTime.minutes <= latestOvernightPunch && punch.punchTime <= now;
+  });
 }
 
 async function sendReminder(
@@ -314,11 +378,20 @@ export async function checkAndSendMissingPunchOutReminders(now = new Date()): Pr
       `SELECT
          UPPER(a.emp_code) AS employee_code,
          COALESCE(e.name, a.emp_code) AS payroll_name,
+           COALESCE(e.email, '') AS payroll_email,
          ${PUNCH_TIME_UTC_SQL} AS punch_time,
          COALESCE(a.punch_state::text, '') AS punch_state
        FROM attendance_logs a
        LEFT JOIN LATERAL (
-         SELECT employee.name
+         SELECT
+           employee.name,
+           COALESCE(
+             to_jsonb(employee)->>'email',
+             to_jsonb(employee)->>'email_address',
+             to_jsonb(employee)->>'official_email',
+             to_jsonb(employee)->>'work_email',
+             to_jsonb(employee)->>'company_email'
+           ) AS email
          FROM employees employee
          WHERE UPPER(employee.employee_code) = UPPER(a.emp_code)
          ORDER BY employee.created_at DESC NULLS LAST, employee.id
@@ -338,6 +411,7 @@ export async function checkAndSendMissingPunchOutReminders(now = new Date()): Pr
       const punch: PunchRecord = {
         employeeCode: code,
         payrollName: (row.payroll_name || code).trim(),
+        payrollEmail: (row.payroll_email || '').trim(),
         punchTime: new Date(row.punch_time),
         punchState: row.punch_state || '',
       };
@@ -357,23 +431,33 @@ export async function checkAndSendMissingPunchOutReminders(now = new Date()): Pr
         if (weekday === 0 || holidayDates.has(attendanceDate)) continue;
         if (shouldDeferForOvernightShift(employeeCode, attendanceDate, now, shifts)) continue;
 
-        const relevantPunches = punches.filter((punch) => {
-          const punchDate = getPunchDate(punch.punchTime);
-          return punchDate >= attendanceDate && punchDate <= today;
-        });
+        const relevantPunches = getPunchesForAttendanceDate(
+          punches,
+          employeeCode,
+          attendanceDate,
+          now,
+          shifts,
+        );
         const missingPunchIn = findUnmatchedPunchIn(relevantPunches, attendanceDate);
         if (!missingPunchIn) continue;
 
         checked += 1;
-        const employee = contacts.get(employeeCode);
-        if (!employee) {
+        const matchedContact = contacts.get(employeeCode);
+        const email = matchedContact?.email || punches.find((punch) => punch.payrollEmail)?.payrollEmail || '';
+        if (!email) {
           console.warn(`[MISSING-PUNCH-OUT] Missing Punch-Out found for ${employeeCode} on ${attendanceDate}, but no active LMS employee email was found; skipping email.`);
           continue;
         }
 
+        const payrollName = punches.find((punch) => punch.payrollName && punch.payrollName !== employeeCode)?.payrollName;
+        const employee: EmployeeContact = {
+          code: employeeCode,
+          name: matchedContact?.name || payrollName || employeeCode,
+          email,
+        };
         const normalizedName = employee.name.toUpperCase();
         const resolvedEmployee = normalizedName === employee.code || normalizedName === employeeCode
-          ? { ...employee, name: punches[0].payrollName || employee.name }
+          ? { ...employee, name: payrollName || employee.name }
           : employee;
         const result = await sendReminder(pool, resolvedEmployee, attendanceDate, missingPunchIn);
         if (result === 'failed') {
@@ -383,7 +467,7 @@ export async function checkAndSendMissingPunchOutReminders(now = new Date()): Pr
       }
     }
 
-    console.log(`[MISSING-PUNCH-OUT] Checked ${checked} incomplete attendance record(s); sent ${sent} reminder(s).`);
+    console.log(`[MISSING-PUNCH-OUT] Evaluated ${punchesByEmployee.size} employee(s) with Payroll punches; found ${checked} incomplete attendance record(s) and sent ${sent} reminder(s).`);
     return { sent, checked };
   } finally {
     isReminderRunning = false;
