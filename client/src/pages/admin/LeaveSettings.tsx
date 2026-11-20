@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useAuth } from '@/context/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -25,6 +26,8 @@ import {
   Pencil,
   PartyPopper,
   Building2,
+  Mail,
+  PauseCircle,
 } from 'lucide-react';
 import {
   LeaveSettings,
@@ -38,6 +41,8 @@ import {
   DEFAULT_HOLIDAY_SETTINGS,
   DEFAULT_PERMISSION_SETTINGS,
   DEFAULT_OD_SETTINGS,
+  DEFAULT_EMAIL_SENDING_SETTINGS,
+  EmailSendingSettings,
   fetchLeaveSettings,
   saveLeaveSettings,
   fetchODSettings,
@@ -48,6 +53,8 @@ import {
   saveHolidaySettings as saveHolidaySettingsApi,
   fetchPermissionSettings,
   savePermissionSettings,
+  fetchEmailSendingSettings,
+  saveEmailSendingSettings,
 } from '@/lib/settings';
 import { getAllUsersAsync } from '@/lib/storage';
 import { User } from '@/lib/data';
@@ -55,7 +62,8 @@ import { DepartmentsManager } from '@/components/DepartmentsManager';
 
 export default function LeaveSettingsPage() {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState<'leave' | 'permissions' | 'shifts' | 'holidays' | 'departments'>('leave');
+  const { user } = useAuth();
+  const [activeTab, setActiveTab] = useState<'leave' | 'permissions' | 'shifts' | 'holidays' | 'departments' | 'email'>('leave');
 
   // Leave Settings State
   const [leaveSettings, setLeaveSettings] = useState<LeaveSettings>(DEFAULT_LEAVE_SETTINGS);
@@ -65,6 +73,11 @@ export default function LeaveSettingsPage() {
 
   const [permissionSettings, setPermissionSettings] = useState<PermissionSettings>(DEFAULT_PERMISSION_SETTINGS);
   const [savingPermissions, setSavingPermissions] = useState(false);
+  const [emailSendingSettings, setEmailSendingSettings] = useState<EmailSendingSettings>(DEFAULT_EMAIL_SENDING_SETTINGS);
+  const [savingEmailSendingSettings, setSavingEmailSendingSettings] = useState(false);
+  const [emailSendingSettingsLoaded, setEmailSendingSettingsLoaded] = useState(false);
+  const [pauseDuration, setPauseDuration] = useState('30');
+  const [customResumeAt, setCustomResumeAt] = useState('');
 
   // Shift Settings State
   const [shiftSettings, setShiftSettings] = useState<ShiftSettings>(DEFAULT_SHIFT_SETTINGS);
@@ -102,6 +115,18 @@ export default function LeaveSettingsPage() {
         setShiftSettings(ss);
         setHolidaySettings(hs);
         setEmployees(emps);
+        if (user?.role === 'Admin') {
+          try {
+            setEmailSendingSettings(await fetchEmailSendingSettings(user.id));
+            setEmailSendingSettingsLoaded(true);
+          } catch (error: any) {
+            toast({
+              title: 'Email Sending Status Unavailable',
+              description: error?.message || 'Failed to load email sending settings.',
+              variant: 'destructive',
+            });
+          }
+        }
       } catch (err) {
         console.error('Failed to load settings:', err);
       } finally {
@@ -109,7 +134,39 @@ export default function LeaveSettingsPage() {
       }
     }
     load();
-  }, []);
+  }, [user?.id, user?.role]);
+
+  useEffect(() => {
+    if (user?.role !== 'Admin' || !user.id || !emailSendingSettings.resumeAt) return;
+
+    const resumeTime = Date.parse(emailSendingSettings.resumeAt);
+    if (!Number.isFinite(resumeTime)) return;
+
+    let timer: number;
+    const refreshAtResume = () => {
+      const remaining = resumeTime - Date.now();
+      if (remaining > 0) {
+        timer = window.setTimeout(refreshAtResume, Math.min(remaining + 1000, 2147483647));
+        return;
+      }
+
+      fetchEmailSendingSettings(user.id)
+        .then((settings) => {
+          setEmailSendingSettings(settings);
+          setEmailSendingSettingsLoaded(true);
+        })
+        .catch((error) => {
+          console.error('Failed to refresh email sending status at resume time:', error);
+          setEmailSendingSettingsLoaded(false);
+        });
+    };
+
+    timer = window.setTimeout(
+      refreshAtResume,
+      Math.min(Math.max(0, resumeTime - Date.now()) + 1000, 2147483647),
+    );
+    return () => window.clearTimeout(timer);
+  }, [emailSendingSettings.resumeAt, user?.id, user?.role]);
 
   // Save Leave Settings
   const handleSaveLeaveSettings = async () => {
@@ -190,6 +247,64 @@ export default function LeaveSettingsPage() {
       });
     } finally {
       setSavingPermissions(false);
+    }
+  };
+
+  const persistEmailSendingSettings = async (settings: EmailSendingSettings) => {
+    if (!user?.id) return;
+    setSavingEmailSendingSettings(true);
+    try {
+      const saved = await saveEmailSendingSettings(settings, user.id);
+      setEmailSendingSettings(saved);
+      setEmailSendingSettingsLoaded(true);
+      toast({
+        title: saved.enabled ? 'Email Sending Enabled' : 'Email Sending Paused',
+        description: saved.resumeAt
+          ? `Sending will automatically resume at ${new Date(saved.resumeAt).toLocaleString()}.`
+          : saved.enabled
+            ? 'Outgoing emails are being sent normally.'
+            : 'Outgoing emails remain stopped until an Admin enables them.',
+        className: saved.enabled ? 'bg-emerald-500 text-white border-none' : undefined,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Unable to Update Email Sending',
+        description: error?.message || 'Failed to save email sending settings.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingEmailSendingSettings(false);
+    }
+  };
+
+  const handleEmailSendingToggle = async (enabled: boolean) => {
+    if (enabled) {
+      await persistEmailSendingSettings({ enabled: true, resumeAt: null });
+      return;
+    }
+    if (window.confirm('Outgoing emails will be temporarily stopped. Do you want to disable email sending?')) {
+      await persistEmailSendingSettings({ enabled: false, resumeAt: null });
+    }
+  };
+
+  const handlePauseEmailSending = async () => {
+    let resumeAt: Date;
+    if (pauseDuration === 'custom') {
+      resumeAt = new Date(customResumeAt);
+      if (!customResumeAt || Number.isNaN(resumeAt.getTime()) || resumeAt.getTime() <= Date.now()) {
+        toast({
+          title: 'Invalid Resume Time',
+          description: 'Choose a custom resume time in the future.',
+          variant: 'destructive',
+        });
+        return;
+      }
+    } else {
+      resumeAt = new Date(Date.now() + Number(pauseDuration) * 60 * 1000);
+    }
+
+    if (window.confirm('Outgoing emails will be temporarily stopped. Do you want to pause email sending?')) {
+      await persistEmailSendingSettings({ enabled: false, resumeAt: resumeAt.toISOString() });
     }
   };
 
@@ -379,7 +494,7 @@ export default function LeaveSettingsPage() {
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={(val) => setActiveTab(val as any)} className="w-full">
-        <TabsList className="grid w-full max-w-5xl grid-cols-2 md:grid-cols-5 bg-slate-100 p-1 rounded-xl">
+        <TabsList className={`grid w-full max-w-5xl grid-cols-2 ${user?.role === 'Admin' ? 'md:grid-cols-6' : 'md:grid-cols-5'} bg-slate-100 p-1 rounded-xl`}>
           <TabsTrigger
             value="leave"
             className="rounded-lg font-semibold data-[state=active]:bg-white data-[state=active]:text-blue-700 data-[state=active]:shadow-sm flex items-center gap-2 py-2.5"
@@ -415,6 +530,15 @@ export default function LeaveSettingsPage() {
             <Building2 className="w-4 h-4" />
             Departments
           </TabsTrigger>
+          {user?.role === 'Admin' && (
+            <TabsTrigger
+              value="email"
+              className="rounded-lg font-semibold data-[state=active]:bg-white data-[state=active]:text-blue-700 data-[state=active]:shadow-sm flex items-center gap-2 py-2.5"
+            >
+              <Mail className="w-4 h-4" />
+              Email Sending
+            </TabsTrigger>
+          )}
         </TabsList>
 
         {/* ==================================================================== */}
@@ -1356,6 +1480,108 @@ export default function LeaveSettingsPage() {
         <TabsContent value="departments" className="space-y-6 pt-4">
           <DepartmentsManager />
         </TabsContent>
+
+        {user?.role === 'Admin' && (
+          <TabsContent value="email" className="space-y-6 pt-4">
+            <Card className="border-slate-200 shadow-sm">
+              <CardHeader>
+                <div className="flex items-center gap-3">
+                  <span className="rounded-xl bg-blue-100 p-2.5 text-blue-700">
+                    <Mail className="h-5 w-5" />
+                  </span>
+                  <div>
+                    <CardTitle>Email Sending</CardTitle>
+                    <CardDescription>Temporarily stop outgoing email notifications without changing Resend configuration.</CardDescription>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="font-semibold text-slate-900">
+                      {!emailSendingSettingsLoaded
+                        ? 'Email Sending Status Unavailable'
+                        : emailSendingSettings.enabled
+                          ? 'Email Sending Enabled'
+                          : 'Email Sending Paused'}
+                    </p>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {!emailSendingSettingsLoaded
+                        ? 'The current server setting could not be confirmed.'
+                        : emailSendingSettings.enabled
+                          ? 'Outgoing emails are sent normally through the existing email service.'
+                          : emailSendingSettings.resumeAt
+                            ? `Resume Time: ${new Date(emailSendingSettings.resumeAt).toLocaleString()}`
+                            : 'Sending is stopped until an Admin enables it.'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-medium text-slate-700">
+                      {!emailSendingSettingsLoaded
+                        ? 'Unavailable'
+                        : emailSendingSettings.enabled
+                          ? 'Enabled'
+                          : 'Disabled'}
+                    </span>
+                    <Switch
+                      checked={emailSendingSettings.enabled}
+                      disabled={!emailSendingSettingsLoaded || savingEmailSendingSettings}
+                      onCheckedChange={handleEmailSendingToggle}
+                      aria-label="Enable outgoing email sending"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid gap-4 rounded-xl border border-slate-200 p-4 md:grid-cols-[1fr_auto] md:items-end">
+                  <div className="space-y-3">
+                    <div>
+                      <Label htmlFor="email-pause-duration" className="font-semibold text-slate-800">Pause duration</Label>
+                      <p className="mt-1 text-sm text-slate-500">Email sending automatically resumes when this pause expires.</p>
+                    </div>
+                    <Select value={pauseDuration} onValueChange={setPauseDuration}>
+                      <SelectTrigger id="email-pause-duration" className="max-w-sm bg-white">
+                        <SelectValue placeholder="Select pause duration" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="30">30 minutes</SelectItem>
+                        <SelectItem value="60">1 hour</SelectItem>
+                        <SelectItem value="120">2 hours</SelectItem>
+                        <SelectItem value="custom">Custom resume time</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {pauseDuration === 'custom' && (
+                      <div className="max-w-sm space-y-2">
+                        <Label htmlFor="email-resume-time">Resume time</Label>
+                        <Input
+                          id="email-resume-time"
+                          type="datetime-local"
+                          value={customResumeAt}
+                          onChange={(event) => setCustomResumeAt(event.target.value)}
+                          className="bg-white"
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={handlePauseEmailSending}
+                    disabled={!emailSendingSettingsLoaded || savingEmailSendingSettings}
+                    className="bg-amber-600 text-white hover:bg-amber-700"
+                  >
+                    {savingEmailSendingSettings
+                      ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                      : <PauseCircle className="mr-2 h-4 w-4" />}
+                    Pause Email Sending
+                  </Button>
+                </div>
+
+                <p className="text-xs text-slate-500">
+                  Notifications attempted while paused are not queued by the existing email workflow and will not be sent.
+                </p>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

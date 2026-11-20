@@ -100,10 +100,20 @@ export interface PermissionSettings {
   dailyLimitMinutes: number;
 }
 
+export interface EmailSendingSettings {
+  enabled: boolean;
+  resumeAt: string | null;
+}
+
 export interface ODSettings {
   maxBackdatedDays: number;
   minAdvanceDays: number;
 }
+
+export const DEFAULT_EMAIL_SENDING_SETTINGS: EmailSendingSettings = {
+  enabled: true,
+  resumeAt: null,
+};
 
 export const DEFAULT_OD_SETTINGS: ODSettings = {
   maxBackdatedDays: 3650,
@@ -382,6 +392,36 @@ export async function savePermissionSettings(settings: PermissionSettings): Prom
     console.error('[SETTINGS] Error saving permission settings to API:', err);
   }
   return false;
+}
+
+export async function fetchEmailSendingSettings(userId: string): Promise<EmailSendingSettings> {
+  const response = await fetch('/api/settings/email-sending', {
+    headers: { 'x-user-id': userId },
+  });
+  const data = await response.json();
+  if (!response.ok || !data.success || !data.settings) {
+    throw new Error(data.message || 'Failed to load email sending settings.');
+  }
+  return data.settings as EmailSendingSettings;
+}
+
+export async function saveEmailSendingSettings(
+  settings: EmailSendingSettings,
+  userId: string,
+): Promise<EmailSendingSettings> {
+  const response = await fetch('/api/settings/email-sending', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-user-id': userId,
+    },
+    body: JSON.stringify(settings),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.success || !data.settings) {
+    throw new Error(data.message || 'Failed to save email sending settings.');
+  }
+  return data.settings as EmailSendingSettings;
 }
 
 // ============================================================================

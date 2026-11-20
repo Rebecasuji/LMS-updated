@@ -1,5 +1,6 @@
 // Email notification service — production-ready via Resend
 import { Resend } from "resend";
+import { getEmailSendingSettings } from "./settingsManager";
 
 export interface EmailNotification {
   to: string[];
@@ -38,6 +39,15 @@ if (RESEND_API_KEY) {
 
 export async function sendEmailNotification(notification: EmailNotification): Promise<boolean> {
   try {
+    const emailSettings = await getEmailSendingSettings();
+    if (!emailSettings.enabled) {
+      console.info(
+        `[EMAIL] Sending is paused; skipped ${notification.type} notification` +
+        (emailSettings.resumeAt ? ` until ${emailSettings.resumeAt}` : '')
+      );
+      return false;
+    }
+
     const toRecipients = (notification.to && notification.to.length > 0) ? notification.to : DEFAULT_ADMIN_EMAILS;
 
     if (!toRecipients || toRecipients.length === 0) {

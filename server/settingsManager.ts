@@ -437,12 +437,20 @@ export interface PermissionSettings {
   dailyLimitMinutes: number;
 }
 
+export interface EmailSendingSettings {
+  enabled: boolean;
+  resumeAt: string | null;
+}
+
 export const DEFAULT_PERMISSION_SETTINGS: PermissionSettings = {
   dailyLimitMinutes: 120,
 };
 
 const PERMISSION_SETTINGS_FILE = path.join(DATA_DIR, 'permission_settings.json');
 const HOLIDAY_SETTINGS_FILE = path.join(DATA_DIR, 'holiday_settings.json');
+const EMAIL_SENDING_SETTINGS_FILE = path.join(DATA_DIR, 'email_sending_settings.json');
+const EMAIL_SENDING_SETTINGS_KEY = 'lms_email_sending_settings';
+const DEFAULT_EMAIL_SENDING_SETTINGS: EmailSendingSettings = { enabled: true, resumeAt: null };
 
 export const DEFAULT_HOLIDAY_SETTINGS: HolidaySettings = {
   holidays: [
@@ -611,6 +619,121 @@ export async function savePermissionSettings(settings: PermissionSettings): Prom
       }
     } catch (err: any) {
       console.error('[SETTINGS] DB save for permission settings failed:', err.message);
+    }
+  }
+
+  return true;
+}
+
+function normalizeEmailSendingSettings(settings: any): EmailSendingSettings {
+  if (!settings || typeof settings.enabled !== 'boolean') {
+    throw new Error('Stored email sending settings are invalid.');
+  }
+
+  if (settings.enabled) {
+    return { enabled: true, resumeAt: null };
+  }
+
+  if (settings.resumeAt === null || settings.resumeAt === undefined) {
+    return { enabled: false, resumeAt: null };
+  }
+
+  const resumeAt = new Date(settings.resumeAt);
+  if (Number.isNaN(resumeAt.getTime())) {
+    throw new Error('Stored email resume time is invalid.');
+  }
+
+  return { enabled: false, resumeAt: resumeAt.toISOString() };
+}
+
+export async function getEmailSendingSettings(): Promise<EmailSendingSettings> {
+  const dbPool = getPool();
+  if (process.env.PAYROLL_DATABASE_URL && !dbPool) {
+    throw new Error('Email sending settings database is unavailable.');
+  }
+
+  if (dbPool) {
+    try {
+      const result = await dbPool.query(
+        'SELECT value FROM settings WHERE key = $1 LIMIT 1',
+        [EMAIL_SENDING_SETTINGS_KEY]
+      );
+      if (result.rows.length > 0 && result.rows[0].value) {
+        const value = typeof result.rows[0].value === 'string'
+          ? JSON.parse(result.rows[0].value)
+          : result.rows[0].value;
+        const settings = normalizeEmailSendingSettings(value);
+        if (!settings.enabled && settings.resumeAt && Date.parse(settings.resumeAt) <= Date.now()) {
+          await saveEmailSendingSettings(DEFAULT_EMAIL_SENDING_SETTINGS);
+          return { ...DEFAULT_EMAIL_SENDING_SETTINGS };
+        }
+        return settings;
+      }
+    } catch (error) {
+      console.error('[SETTINGS] Failed to load email sending settings from database:', error);
+      throw new Error('Failed to load email sending settings.');
+    }
+  }
+
+  try {
+    if (fs.existsSync(EMAIL_SENDING_SETTINGS_FILE)) {
+      const value = JSON.parse(fs.readFileSync(EMAIL_SENDING_SETTINGS_FILE, 'utf-8'));
+      const settings = normalizeEmailSendingSettings(value);
+      if (!settings.enabled && settings.resumeAt && Date.parse(settings.resumeAt) <= Date.now()) {
+        await saveEmailSendingSettings(DEFAULT_EMAIL_SENDING_SETTINGS);
+        return { ...DEFAULT_EMAIL_SENDING_SETTINGS };
+      }
+      return settings;
+    }
+  } catch (error) {
+    console.error('[SETTINGS] Failed to load email sending settings from file:', error);
+    throw new Error('Failed to load email sending settings.');
+  }
+
+  return { ...DEFAULT_EMAIL_SENDING_SETTINGS };
+}
+
+export async function saveEmailSendingSettings(settings: EmailSendingSettings): Promise<boolean> {
+  const normalized = normalizeEmailSendingSettings(settings);
+  if (!normalized.enabled && normalized.resumeAt && Date.parse(normalized.resumeAt) <= Date.now()) {
+    throw new Error('Resume time must be in the future.');
+  }
+
+  const dbPool = getPool();
+  if (process.env.PAYROLL_DATABASE_URL && !dbPool) {
+    throw new Error('Email sending settings database is unavailable.');
+  }
+
+  if (dbPool) {
+    const json = JSON.stringify(normalized);
+    try {
+      const existing = await dbPool.query(
+        'SELECT id FROM settings WHERE key = $1 LIMIT 1',
+        [EMAIL_SENDING_SETTINGS_KEY]
+      );
+      if (existing.rows.length > 0) {
+        await dbPool.query(
+          'UPDATE settings SET value = $1, updated_at = NOW() WHERE key = $2',
+          [json, EMAIL_SENDING_SETTINGS_KEY]
+        );
+      } else {
+        await dbPool.query(
+          'INSERT INTO settings (id, key, value, created_at, updated_at) VALUES (gen_random_uuid(), $1, $2, NOW(), NOW())',
+          [EMAIL_SENDING_SETTINGS_KEY, json]
+        );
+      }
+    } catch (error) {
+      console.error('[SETTINGS] Failed to save email sending settings to database:', error);
+      throw new Error('Failed to persist email sending settings.');
+    }
+  }
+
+  try {
+    fs.writeFileSync(EMAIL_SENDING_SETTINGS_FILE, JSON.stringify(normalized, null, 2), 'utf-8');
+  } catch (error) {
+    console.error('[SETTINGS] Failed to write email sending settings to file:', error);
+    if (!dbPool) {
+      throw new Error('Failed to persist email sending settings.');
     }
   }
 

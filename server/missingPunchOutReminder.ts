@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import { sendEmailNotification } from './email';
 import { parseTimeToMinutes } from './attendanceReport';
-import { getHolidaySettings, getShiftSettings } from './settingsManager';
+import { getEmailSendingSettings, getHolidaySettings, getShiftSettings } from './settingsManager';
 import { supabaseServer } from './supabaseServerClient';
 
 const TIME_ZONE = process.env.APP_TIMEZONE || 'Asia/Kolkata';
@@ -483,9 +483,26 @@ async function checkAndRunReminderScheduler(): Promise<void> {
 
   lastAttemptAt = Date.now();
   try {
+    const emailSettings = await getEmailSendingSettings();
+    if (!emailSettings.enabled) {
+      lastSuccessfulRunDate = currentDate;
+      console.info('[MISSING-PUNCH-OUT] Reminder skipped because email sending is paused; it will not be retried today.');
+      return;
+    }
+
     await checkAndSendMissingPunchOutReminders(now);
     lastSuccessfulRunDate = currentDate;
   } catch (error) {
+    try {
+      const emailSettings = await getEmailSendingSettings();
+      if (!emailSettings.enabled) {
+        lastSuccessfulRunDate = currentDate;
+        console.info('[MISSING-PUNCH-OUT] Reminder skipped because email sending is paused; it will not be retried today.');
+        return;
+      }
+    } catch (statusError) {
+      console.error('[MISSING-PUNCH-OUT] Failed to confirm email sending status after reminder failure:', statusError);
+    }
     console.error('[MISSING-PUNCH-OUT] Daily reminder run failed:', error);
   }
 }

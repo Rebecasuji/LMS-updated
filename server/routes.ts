@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 
@@ -16,8 +16,49 @@ import crypto from "crypto";
 import { cliqService } from "./cliq";
 import { generateDailyAttendanceReport } from "./attendanceReport";
 import { checkAndRunScheduledReport, markDailyReportSent } from "./scheduler";
-import { getLeaveSettings, saveLeaveSettings, getODSettings, saveODSettings, validateODApplicationDates, getShiftSettings, saveShiftSettings, getHolidaySettings, saveHolidaySettings, getPermissionSettings, savePermissionSettings } from "./settingsManager";
+import { getLeaveSettings, saveLeaveSettings, getODSettings, saveODSettings, validateODApplicationDates, getShiftSettings, saveShiftSettings, getHolidaySettings, saveHolidaySettings, getPermissionSettings, savePermissionSettings, getEmailSendingSettings, saveEmailSendingSettings } from "./settingsManager";
 
+type EmailSettingsAuthorization =
+  | { authorized: true }
+  | { authorized: false; status: 401 | 403 | 503; message: string };
+
+async function authorizeEmailSettingsAdmin(req: Request): Promise<EmailSettingsAuthorization> {
+  const userId = req.get("x-user-id")?.trim();
+  if (!userId) {
+    return { authorized: false, status: 401, message: "Admin identity is required" };
+  }
+  if (!supabaseServer) {
+    return { authorized: false, status: 503, message: "User authorization service is unavailable" };
+  }
+
+  const byUserId = await supabaseServer
+    .from("users")
+    .select("role, is_active")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (byUserId.error) {
+    throw byUserId.error;
+  }
+
+  let user = byUserId.data as { role: string | null; is_active: boolean | null } | null;
+  if (!user) {
+    const byUsername = await supabaseServer
+      .from("users")
+      .select("role, is_active")
+      .eq("username", userId)
+      .maybeSingle();
+    if (byUsername.error) {
+      throw byUsername.error;
+    }
+    user = byUsername.data as { role: string | null; is_active: boolean | null } | null;
+  }
+
+  if (!user || user.is_active === false || String(user.role || "").toLowerCase() !== "admin") {
+    return { authorized: false, status: 403, message: "Email sending settings are restricted to active Admin users" };
+  }
+
+  return { authorized: true };
+}
 
 export async function registerRoutes(
   httpServer: Server,
@@ -733,6 +774,57 @@ export async function registerRoutes(
   });
 
   // Settings endpoints (Leave rules & Shift timings)
+  app.get("/api/settings/email-sending", async (req, res) => {
+    try {
+      const authorization = await authorizeEmailSettingsAdmin(req);
+      if (!authorization.authorized) {
+        return res.status(authorization.status).json({ success: false, message: authorization.message });
+      }
+
+      const settings = await getEmailSendingSettings();
+      res.json({ success: true, settings });
+    } catch (err: any) {
+      console.error("[SETTINGS] Failed to get email sending settings:", err);
+      res.status(500).json({ success: false, message: err?.message || "Failed to get email sending settings" });
+    }
+  });
+
+  app.post("/api/settings/email-sending", async (req, res) => {
+    try {
+      const authorization = await authorizeEmailSettingsAdmin(req);
+      if (!authorization.authorized) {
+        return res.status(authorization.status).json({ success: false, message: authorization.message });
+      }
+
+      const { enabled, resumeAt } = req.body || {};
+      if (
+        typeof enabled !== "boolean" ||
+        (resumeAt !== null && resumeAt !== undefined && typeof resumeAt !== "string")
+      ) {
+        return res.status(400).json({ success: false, message: "Invalid email sending settings" });
+      }
+      if (enabled && resumeAt) {
+        return res.status(400).json({ success: false, message: "Enabled email sending cannot have a resume time" });
+      }
+      if (!enabled && resumeAt) {
+        const resumeTime = Date.parse(resumeAt);
+        if (!Number.isFinite(resumeTime) || resumeTime <= Date.now()) {
+          return res.status(400).json({ success: false, message: "Resume time must be in the future" });
+        }
+      }
+
+      await saveEmailSendingSettings({ enabled, resumeAt: resumeAt || null });
+      res.json({
+        success: true,
+        message: "Email sending settings saved",
+        settings: await getEmailSendingSettings(),
+      });
+    } catch (err: any) {
+      console.error("[SETTINGS] Failed to save email sending settings:", err);
+      res.status(500).json({ success: false, message: err?.message || "Failed to save email sending settings" });
+    }
+  });
+
   app.get("/api/settings/leave", async (_req, res) => {
     try {
       const settings = await getLeaveSettings();
